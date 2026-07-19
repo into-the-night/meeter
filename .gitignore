@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+.local-data/
+.DS_Store
+models/
+.python/
+.uv-cache/
+local.env
+

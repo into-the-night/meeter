@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <meta name="theme-color" content="#f7f7fa">
+    <title>Meeter · Local meeting intelligence</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand-row">
+          <a class="brand" href="#" data-action="home" aria-label="Meeter home">
+            <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+            <span>meeter</span>
+          </a>
+          <button class="icon-button mobile-only" data-action="close-sidebar" aria-label="Close menu">×</button>
+        </div>
+        <button class="new-meeting-button" data-action="new-meeting">
+          <span class="plus">+</span>
+          New meeting
+        </button>
+        <nav class="primary-nav" aria-label="Primary">
+          <button class="nav-item active" data-action="home"><span class="nav-icon">⌂</span>All meetings</button>
+          <button class="nav-item" data-action="show-actions"><span class="nav-icon">✓</span>My actions <span class="nav-badge" id="action-count">0</span></button>
+        </nav>
+        <div class="sidebar-section">
+          <div class="section-label"><span>Recent</span><button class="tiny-button" data-action="refresh" aria-label="Refresh">↻</button></div>
+          <div id="meeting-list" class="meeting-list"></div>
+        </div>
+        <div class="sidebar-footer">
+          <button class="nav-item" data-action="settings"><span class="nav-icon">⚙</span>Settings</button>
+          <div class="privacy-pill"><span class="status-dot"></span><span><strong>Local & private</strong><small>Nothing leaves this device</small></span></div>
+        </div>
+      </aside>
+
+      <main class="main-shell">
+        <header class="topbar">
+          <button class="icon-button mobile-only" data-action="open-sidebar" aria-label="Open menu">☰</button>
+          <div class="breadcrumb" id="breadcrumb">Meetings</div>
+          <div class="top-actions">
+            <label class="search-box" id="global-search-wrap">
+              <span>⌕</span>
+              <input type="search" id="global-search" placeholder="Search transcript" autocomplete="off">
+              <kbd>⌘ K</kbd>
+            </label>
+            <button class="avatar-button" data-action="settings" aria-label="Open settings">AS</button>
+          </div>
+        </header>
+        <div id="app" class="app-content" aria-live="polite"></div>
+      </main>
+    </div>
+
+    <input id="file-input" type="file" accept="audio/*,video/mp4,video/webm,.m4a,.wav,.mp3,.ogg,.flac,.mp4,.webm" hidden>
+    <input id="voice-file-input" type="file" accept="audio/*,.m4a,.wav,.mp3,.ogg,.flac,.webm" hidden>
+
+    <div class="modal-layer" id="capture-modal" hidden>
+      <div class="modal capture-modal" role="dialog" aria-modal="true" aria-labelledby="capture-title">
+        <button class="modal-close" data-action="close-capture" aria-label="Close">×</button>
+        <div class="capture-icon"><span>✦</span></div>
+        <h2 id="capture-title">Start a new meeting</h2>
+        <p>Record a conversation or bring in an existing file. Processing happens on this laptop.</p>
+        <div class="capture-options">
+          <button class="capture-option" data-action="toggle-record">
+            <span class="option-icon record-icon">●</span>
+            <span><strong id="record-label">Record now</strong><small id="record-subtitle">Use this laptop's microphone</small></span>
+            <span class="arrow">→</span>
+          </button>
+          <button class="capture-option" data-action="choose-file">
+            <span class="option-icon upload-icon">↑</span>
+            <span><strong>Import a recording</strong><small>Audio or video · up to 750 MB</small></span>
+            <span class="arrow">→</span>
+          </button>
+        </div>
+        <div class="modal-trust"><span>▣</span> Audio stays on this device and is never uploaded to a cloud service.</div>
+      </div>
+    </div>
+
+    <div class="modal-layer" id="process-modal" hidden>
+      <div class="modal process-modal" role="dialog" aria-modal="true" aria-labelledby="process-title">
+        <div class="processing-orb"><span></span><i></i><b></b></div>
+        <span class="eyebrow">LOCAL PROCESSING</span>
+        <h2 id="process-title">Turning conversation into clarity</h2>
+        <p id="process-step">Preparing your recording…</p>
+        <div class="progress-track"><div id="process-progress"></div></div>
+        <small id="process-percent">2%</small>
+      </div>
+    </div>
+
+    <div class="modal-layer" id="settings-modal" hidden>
+      <div class="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="modal-heading">
+          <div><span class="eyebrow">THIS DEVICE</span><h2 id="settings-title">Local intelligence</h2></div>
+          <button class="modal-close static" data-action="close-settings" aria-label="Close">×</button>
+        </div>
+        <p class="settings-intro">Meeter only loads model files your IT team has placed on this laptop. It never downloads models itself.</p>
+        <div id="model-status" class="model-status"></div>
+        <div class="settings-divider"></div>
+        <h3>Known voices</h3>
+        <p class="settings-copy">Enroll a clean 20–60 second voice sample to recognize a colleague in future meetings. Unmatched voices remain clearly labeled as unknown.</p>
+        <div id="speaker-library" class="speaker-library"></div>
+        <div class="enroll-row">
+          <input id="speaker-name" type="text" maxlength="80" placeholder="Colleague's name">
+          <button class="secondary-button" data-action="choose-voice">Choose voice sample</button>
+        </div>
+        <div class="settings-note">Voiceprints are mathematical embeddings stored locally—not uploaded, synced, or shared.</div>
+      </div>
+    </div>
+
+    <div class="toast-region" id="toast-region" aria-live="assertive"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
