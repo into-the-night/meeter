@@ -30,6 +30,62 @@ Run the checks with:
 python3 -m unittest discover -s tests -v
 ```
 
+## Read-only MCP server
+
+Meeter includes a local MCP server for sharing approved meeting context with MCP-compatible
+AI clients. It uses stdio, reads the same local meeting files as Meeter, and has no tools that
+create, update, or delete data.
+
+Install the stable MCP SDK:
+
+```bash
+uv pip install --python .venv/bin/python -r requirements-mcp.txt
+```
+
+If you do not use Meeter's project environment, install it with
+`python3 -m pip install -r requirements-mcp.txt` instead. The launcher selects an installed
+environment automatically.
+
+Then configure an MCP client to launch:
+
+```bash
+/absolute/path/to/meeter/run-meeter-mcp.command
+```
+
+The default `insights` privacy level exposes only meeting metadata, summaries, decisions,
+risks, discussions, and actions. It never exposes transcripts, audio, source filenames, voice
+profiles, speaker embeddings, or model metadata. Email addresses and phone numbers are
+redacted by default.
+
+Privacy is fixed when the process starts, so an AI cannot elevate its own access:
+
+```bash
+# Allow query-matched transcript turns, but never a full transcript
+./run-meeter-mcp.command --privacy excerpts
+
+# Explicitly allow full text transcripts
+./run-meeter-mcp.command --privacy full
+
+# Limit the server to selected meetings
+./run-meeter-mcp.command \
+  --allowed-meetings meeting_abc123,meeting_def456
+```
+
+Equivalent environment variables are `MEETER_MCP_PRIVACY`, `MEETER_MCP_REDACT_PII`, and
+`MEETER_MCP_ALLOWED_MEETINGS`. `MEETER_DATA_DIR` continues to select Meeter's data directory.
+Do not disable PII redaction or enable transcript access unless the connected client is trusted
+to receive that information.
+
+Available tools in the default mode:
+
+- `list_meetings` — browse permitted meetings by title, participant, or date.
+- `get_meeting_insights` — retrieve structured insights without transcript text.
+- `search_meetings` — search permitted insight fields.
+- `get_action_items` — collect action items, optionally filtered by owner.
+
+The `excerpts` mode adds `get_transcript_excerpts`, which requires a search phrase and returns
+only matching turns. The `full` mode additionally adds `get_meeting_transcript`.
+
 ## Manual or managed model setup
 
 Meeter intentionally refuses to fetch models. Download and approve model files through your company's normal software-distribution process, then configure absolute local paths:

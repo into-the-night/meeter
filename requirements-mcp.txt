@@ -1,0 +1,2 @@
+# Stable v1 SDK. The v2 line is pre-release as of this integration.
+mcp>=1.27,<2
