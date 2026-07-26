@@ -24,7 +24,7 @@
           New meeting
         </button>
         <nav class="primary-nav" aria-label="Primary">
-          <button class="nav-item active" data-action="home"><span class="nav-icon">⌂</span>Meeting library</button>
+          <button class="nav-item" data-action="show-library"><span class="nav-icon">⌂</span>Meeting library</button>
           <button class="nav-item" data-action="show-actions"><span class="nav-icon">✓</span>Action hub <span class="nav-badge" id="action-count">0</span></button>
         </nav>
         <div class="sidebar-section">
@@ -33,21 +33,18 @@
         </div>
         <div class="sidebar-footer">
           <button class="nav-item" data-action="settings"><span class="nav-icon">⚙</span>Settings</button>
-          <div class="privacy-pill"><span class="status-dot"></span><span><strong>Local & private</strong><small>Nothing leaves this device</small></span></div>
         </div>
       </aside>
 
       <main class="main-shell">
         <header class="topbar">
           <button class="icon-button mobile-only" data-action="open-sidebar" aria-label="Open menu">☰</button>
-          <div class="breadcrumb" id="breadcrumb">Meetings</div>
           <div class="top-actions">
             <label class="search-box" id="global-search-wrap">
               <span>⌕</span>
               <input type="search" id="global-search" placeholder="Search this meeting" autocomplete="off">
               <kbd>⌘ K</kbd>
             </label>
-            <button class="avatar-button" data-action="settings" aria-label="Open settings">M</button>
           </div>
         </header>
         <div id="app" class="app-content" aria-live="polite"></div>
@@ -57,39 +54,54 @@
     <input id="file-input" type="file" accept="audio/*,video/mp4,video/webm,.m4a,.wav,.mp3,.ogg,.flac,.mp4,.webm" hidden>
     <input id="voice-file-input" type="file" accept="audio/*,.m4a,.wav,.mp3,.ogg,.flac,.webm" hidden>
 
-    <div class="modal-layer" id="capture-modal" hidden>
-      <div class="modal capture-modal" role="dialog" aria-modal="true" aria-labelledby="capture-title">
-        <button class="modal-close" data-action="close-capture" aria-label="Close">×</button>
-        <div class="capture-icon"><span>✦</span></div>
-        <h2 id="capture-title">Start a new meeting</h2>
-        <p>Choose what to capture. You can switch either audio source on or off while recording.</p>
-        <div class="audio-source-controls" aria-label="Recording audio sources">
-          <button class="audio-source-toggle active" type="button" role="switch" aria-checked="true" data-action="toggle-audio-source" data-source="mic">
-            <span class="source-icon" aria-hidden="true">●</span>
-            <span><strong>Microphone</strong><small id="mic-source-status">On</small></span>
-            <span class="toggle-track" aria-hidden="true"><i></i></span>
-          </button>
-          <button class="audio-source-toggle" type="button" role="switch" aria-checked="false" data-action="toggle-audio-source" data-source="device">
-            <span class="source-icon device-icon" aria-hidden="true">▣</span>
-            <span><strong>Device audio</strong><small id="device-source-status">Off</small></span>
-            <span class="toggle-track" aria-hidden="true"><i></i></span>
-          </button>
+    <div class="capture-layer" id="capture-modal" hidden>
+      <section class="capture-screen" role="dialog" aria-modal="true" aria-labelledby="capture-title">
+        <header class="capture-screen-top">
+          <span class="capture-brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><strong>meeter</strong></span>
+          <button class="capture-back" data-action="close-capture" aria-label="Return to Meeter"><span>←</span> Back</button>
+        </header>
+        <div class="capture-screen-content">
+          <div class="capture-intro">
+            <span class="capture-eyebrow"><i></i> Ready when you are</span>
+            <h2 id="capture-title">Capture the conversation.<br><em>Keep the clarity.</em></h2>
+            <p>Record the room, include shared device audio, or bring an existing file. Meeter turns it into notes and next steps locally.</p>
+          </div>
+          <div class="recording-stage" aria-hidden="true">
+            <div class="recording-halo"></div>
+            <div class="recording-core"><span></span></div>
+            <div class="recording-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+          <div class="capture-controls">
+            <div class="source-heading"><strong>Audio sources</strong><small>Change these anytime while recording</small></div>
+            <div class="audio-source-controls" aria-label="Recording audio sources">
+              <button class="audio-source-toggle active" type="button" role="switch" aria-checked="true" data-action="toggle-audio-source" data-source="mic">
+                <span class="source-icon" aria-hidden="true">●</span>
+                <span><strong>Microphone</strong><small id="mic-source-status">On</small></span>
+                <span class="toggle-track" aria-hidden="true"><i></i></span>
+              </button>
+              <button class="audio-source-toggle" type="button" role="switch" aria-checked="false" data-action="toggle-audio-source" data-source="device">
+                <span class="source-icon device-icon" aria-hidden="true">▣</span>
+                <span><strong>Device audio</strong><small id="device-source-status">Off</small></span>
+                <span class="toggle-track" aria-hidden="true"><i></i></span>
+              </button>
+            </div>
+            <p class="device-audio-note">Device audio opens the browser share picker. Choose a tab or screen and enable its audio.</p>
+            <div class="capture-options">
+              <button class="capture-option capture-record" data-action="toggle-record">
+                <span class="option-icon record-icon">●</span>
+                <span><strong id="record-label">Start recording</strong><small id="record-subtitle">Microphone on · Device audio off</small></span>
+                <span class="arrow">→</span>
+              </button>
+              <button class="capture-option capture-import" data-action="choose-file">
+                <span class="option-icon upload-icon">↥</span>
+                <span><strong>Import a recording</strong><small>Audio or video · up to 750 MB</small></span>
+                <span class="arrow">→</span>
+              </button>
+            </div>
+            <div class="capture-trust"><span>✓</span> Audio stays on this device</div>
+          </div>
         </div>
-        <p class="device-audio-note">Device audio opens the browser’s share picker. Select a tab or screen and enable its audio.</p>
-        <div class="capture-options">
-          <button class="capture-option" data-action="toggle-record">
-            <span class="option-icon record-icon">●</span>
-            <span><strong id="record-label">Record now</strong><small id="record-subtitle">Microphone on · Device audio off</small></span>
-            <span class="arrow">→</span>
-          </button>
-          <button class="capture-option" data-action="choose-file">
-            <span class="option-icon upload-icon">↑</span>
-            <span><strong>Import a recording</strong><small>Audio or video · up to 750 MB</small></span>
-            <span class="arrow">→</span>
-          </button>
-        </div>
-        <div class="modal-trust"><span>▣</span> Audio stays on this device and is never uploaded to a cloud service.</div>
-      </div>
+      </section>
     </div>
 
     <div class="modal-layer" id="process-modal" hidden>

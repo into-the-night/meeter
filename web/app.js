@@ -18,6 +18,7 @@ const state = {
   chunks: [],
   recordStarted: 0,
   recordTimer: null,
+  captureReturnHash: "",
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -53,6 +54,14 @@ function initials(name) {
   return String(name || "?").split(/\s+/).slice(0, 2).map((part) => part[0] || "").join("").toUpperCase();
 }
 
+function copyIcon() {
+  return `<svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true"><rect x="6.5" y="6.5" width="9" height="9" rx="2"></rect><path d="M13 6.5V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h1.5"></path></svg>`;
+}
+
+function downloadIcon() {
+  return `<svg class="button-icon" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v9"></path><path d="m6.5 8.5 3.5 3.5 3.5-3.5"></path><path d="M4 15.5h12"></path></svg>`;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, options);
   let payload;
@@ -73,6 +82,7 @@ async function refreshMeetings() {
   const value = await api("/api/meetings");
   state.meetings = value.meetings || [];
   renderMeetingList();
+  renderLibraryCards();
 }
 
 function renderMeetingList() {
@@ -87,7 +97,7 @@ function renderMeetingList() {
 }
 
 function setActiveNav(view) {
-  $$("[data-action='home'], [data-action='show-actions']").forEach((item) => {
+  $$("[data-action='show-library'], [data-action='show-actions']").forEach((item) => {
     item.classList.toggle("active", item.dataset.action === view);
   });
 }
@@ -96,7 +106,6 @@ function showWelcome() {
   state.current = null;
   state.tab = "overview";
   if (location.hash) history.replaceState(null, "", location.pathname);
-  $("#breadcrumb").textContent = "Meetings";
   $("#global-search-wrap").hidden = true;
   setActiveNav("home");
   renderMeetingList();
@@ -104,7 +113,6 @@ function showWelcome() {
     <section class="welcome">
       <div class="welcome-inner">
         <div class="welcome-copy">
-          <span class="hero-pill"><i></i> Private meeting intelligence</span>
           <h1>Talk it through.<br><em>Leave aligned.</em></h1>
           <p>Meeter turns every conversation into crisp decisions, searchable context, and action items—without your data leaving this laptop.</p>
         </div>
@@ -127,13 +135,76 @@ function showWelcome() {
     </section>`;
 }
 
+function libraryCard(meeting) {
+  const people = meeting.participants || [];
+  return `
+    <button class="library-card" data-action="open-meeting" data-id="${escapeHtml(meeting.id)}">
+      <div class="library-card-top">
+        <span class="library-date">${formatDate(meeting.created_at, "long")}</span>
+        <span class="library-open" aria-hidden="true">↗</span>
+      </div>
+      <div>
+        <h2>${escapeHtml(meeting.title)}</h2>
+        <p>${formatDuration(meeting.duration)} · ${people.length} speaker${people.length === 1 ? "" : "s"}</p>
+      </div>
+      <div class="library-card-footer">
+        <span class="library-people">${people.slice(0, 4).map((person) => `<i title="${escapeHtml(person.name)}">${escapeHtml(initials(person.name))}</i>`).join("") || "<i>?</i>"}</span>
+        <span class="library-actions">${Number(meeting.action_count || 0)} action${Number(meeting.action_count || 0) === 1 ? "" : "s"}</span>
+      </div>
+    </button>`;
+}
+
+function renderLibraryCards() {
+  const grid = $("#library-grid");
+  if (!grid) return;
+  const query = ($("#library-search")?.value || "").trim().toLowerCase();
+  const sort = $("#library-sort")?.value || "newest";
+  const meetings = state.meetings.filter((meeting) => {
+    const haystack = [meeting.title, ...(meeting.participants || []).map((person) => person.name)].join(" ").toLowerCase();
+    return !query || haystack.includes(query);
+  });
+  meetings.sort((a, b) => {
+    if (sort === "oldest") return new Date(a.created_at) - new Date(b.created_at);
+    if (sort === "title") return a.title.localeCompare(b.title);
+    if (sort === "duration") return Number(b.duration || 0) - Number(a.duration || 0);
+    return new Date(b.created_at) - new Date(a.created_at);
+  });
+  grid.innerHTML = meetings.length
+    ? meetings.map(libraryCard).join("")
+    : `<div class="library-empty"><span>⌕</span><h2>No meetings found</h2><p>Try another title or speaker.</p></div>`;
+  const count = $("#library-result-count");
+  if (count) count.textContent = `${meetings.length} meeting${meetings.length === 1 ? "" : "s"}`;
+}
+
+function showLibrary() {
+  state.current = null;
+  history.replaceState(null, "", "#library");
+  $("#global-search-wrap").hidden = true;
+  setActiveNav("show-library");
+  renderMeetingList();
+  $("#app").innerHTML = `
+    <section class="library-page">
+      <header class="library-header">
+        <div><span class="library-kicker">Your conversations</span><h1>Meeting library</h1><p>Everything discussed, decided, and assigned—ready when you need it.</p></div>
+        <button class="primary-button library-new" data-action="new-meeting"><span class="button-orb">●</span> New meeting</button>
+      </header>
+      <div class="library-toolbar">
+        <label class="library-search"><span>⌕</span><input id="library-search" type="search" placeholder="Search by meeting or speaker…" autocomplete="off"></label>
+        <span id="library-result-count" class="library-result-count"></span>
+        <label class="library-sort-label"><span>Sort</span><select id="library-sort"><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="title">Title A–Z</option><option value="duration">Longest first</option></select></label>
+      </div>
+      <div id="library-grid" class="library-grid"></div>
+    </section>`;
+  renderLibraryCards();
+}
+
 async function openMeeting(id) {
   try {
     state.current = await api(`/api/meetings/${encodeURIComponent(id)}`);
     state.tab = "overview";
     history.replaceState(null, "", `#${id}`);
     $("#global-search-wrap").hidden = false;
-    setActiveNav("home");
+    setActiveNav("show-library");
     renderMeeting();
     renderMeetingList();
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -147,7 +218,6 @@ function participantAvatars(participants = []) {
 function renderMeeting() {
   const meeting = state.current;
   if (!meeting) return showWelcome();
-  $("#breadcrumb").innerHTML = `Meetings&nbsp;&nbsp;/&nbsp;&nbsp;<strong>${escapeHtml(meeting.title)}</strong>`;
   const unknownCount = (meeting.participants || []).filter((person) => person.known === false).length;
   $("#app").innerHTML = `
     <section class="meeting-page">
@@ -167,8 +237,8 @@ function renderMeeting() {
           </div>
         </div>
         <div class="meeting-controls">
-          <button class="more-button" data-action="export-markdown" title="Export Markdown">↓</button>
-          <button class="share-button" data-action="copy-summary">Copy summary</button>
+          <button class="more-button feedback-button" data-action="export-markdown" title="Download Markdown" aria-label="Download meeting as Markdown">${downloadIcon()}</button>
+          <button class="share-button feedback-button" data-action="copy-summary">${copyIcon()}<span>Copy summary</span></button>
         </div>
       </header>
       <nav class="tabs" aria-label="Meeting view">
@@ -207,7 +277,7 @@ function renderOverview() {
       </div>
       <aside class="column">
         <article class="card card-pad action-section">
-          <div class="section-head"><h2>Action items <span class="count-badge">${(meeting.actions || []).length}</span></h2>${(meeting.actions || []).length ? `<button class="copy-all-button" data-action="copy-all-actions"><span>▣</span> Copy all</button>` : ""}</div>
+          <div class="section-head"><h2>Action items <span class="count-badge">${(meeting.actions || []).length}</span></h2>${(meeting.actions || []).length ? `<button class="copy-all-button feedback-button" data-action="copy-all-actions">${copyIcon()}<span>Copy all</span></button>` : ""}</div>
           ${renderActions(meeting.actions || [])}
         </article>
         ${risks.length ? `<article class="card card-pad"><div class="section-head"><h2>Watch-outs</h2></div>${risks.map((risk) => `<div class="risk-item"><span class="risk-icon">△</span><span>${escapeHtml(risk)}</span></div>`).join("")}</article>` : ""}
@@ -229,8 +299,8 @@ function renderActions(actions) {
         ${action.due ? `<span class="due-pill">Due ${formatDate(action.due)}</span>` : ""}
       </div>
       <div class="action-buttons">
-        <button class="mini-action" data-action="copy-action" data-id="${escapeHtml(action.id)}">Copy</button>
-        <button class="mini-action" data-action="calendar-action" data-id="${escapeHtml(action.id)}">＋ Calendar</button>
+        <button class="mini-action feedback-button" data-action="copy-action" data-id="${escapeHtml(action.id)}">${copyIcon()}<span>Copy</span></button>
+        <button class="mini-action feedback-button" data-action="calendar-action" data-id="${escapeHtml(action.id)}"><span>＋ Calendar</span></button>
       </div>
     </div>`).join("")}</div>`;
 }
@@ -283,10 +353,10 @@ async function showActions() {
   const actions = full.flatMap((meeting) => (meeting.actions || []).map((action) => ({ ...action, meetingTitle: meeting.title, meetingId: meeting.id })));
   state.allActions = actions;
   state.current = null;
-  $("#breadcrumb").innerHTML = `<strong>My actions</strong>`;
+  history.replaceState(null, "", "#actions");
   $("#global-search-wrap").hidden = true;
   setActiveNav("show-actions");
-  $("#app").innerHTML = `<section class="actions-page"><header class="meeting-header"><div><div class="meeting-kicker">Across all meetings</div><h1>Action hub</h1><div class="meeting-meta"><span>${actions.filter((item) => !item.completed).length} open commitments</span><span>${actions.length} total</span></div></div>${actions.length ? `<button class="share-button" data-action="copy-all-actions" data-scope="all"><span>▣</span> Copy all actions</button>` : ""}</header><div class="tabs"></div><div class="tab-panel"><article class="card card-pad action-section"><div class="actions-list">${actions.length ? actions.map((action) => `<div class="action-card ${action.completed ? "completed" : ""}"><div class="action-main"><span class="decision-check">${action.completed ? "✓" : "→"}</span><div><p class="action-title">${escapeHtml(action.text)}</p><p class="action-context">${escapeHtml(action.meetingTitle)} · ${escapeHtml(action.owner || "Unassigned")}${action.due ? ` · Due ${formatDate(action.due)}` : ""}</p></div></div><div class="action-buttons"><button class="mini-action" data-action="open-meeting" data-id="${escapeHtml(action.meetingId)}">Open meeting →</button></div></div>`).join("") : `<div class="empty-state">No actions yet.</div>`}</div></article></div></section>`;
+  $("#app").innerHTML = `<section class="actions-page"><header class="meeting-header"><div><div class="meeting-kicker">Across all meetings</div><h1>Action hub</h1><div class="meeting-meta"><span>${actions.filter((item) => !item.completed).length} open commitments</span><span>${actions.length} total</span></div></div>${actions.length ? `<button class="share-button feedback-button" data-action="copy-all-actions" data-scope="all">${copyIcon()}<span>Copy all actions</span></button>` : ""}</header><div class="tabs"></div><div class="tab-panel"><article class="card card-pad action-section"><div class="actions-list">${actions.length ? actions.map((action) => `<div class="action-card ${action.completed ? "completed" : ""}"><div class="action-main"><span class="decision-check">${action.completed ? "✓" : "→"}</span><div><p class="action-title">${escapeHtml(action.text)}</p><p class="action-context">${escapeHtml(action.meetingTitle)} · ${escapeHtml(action.owner || "Unassigned")}${action.due ? ` · Due ${formatDate(action.due)}` : ""}</p></div></div><div class="action-buttons"><button class="mini-action" data-action="open-meeting" data-id="${escapeHtml(action.meetingId)}">Open meeting →</button></div></div>`).join("") : `<div class="empty-state">No actions yet.</div>`}</div></article></div></section>`;
   renderMeetingList();
 }
 
@@ -301,7 +371,21 @@ async function createDemo() {
   } catch (error) { toast(error.message, "error"); }
 }
 
-function setModal(id, visible) { $(id).hidden = !visible; }
+function setModal(id, visible) {
+  $(id).hidden = !visible;
+  if (id === "#capture-modal") document.body.classList.toggle("capture-open", visible);
+}
+
+function openCapture() {
+  state.captureReturnHash = location.hash === "#record" ? "" : location.hash;
+  history.replaceState(null, "", "#record");
+  setModal("#capture-modal", true);
+}
+
+function closeCapture() {
+  setModal("#capture-modal", false);
+  history.replaceState(null, "", state.captureReturnHash || location.pathname);
+}
 
 function updateAudioSourceUI() {
   for (const source of ["mic", "device"]) {
@@ -449,7 +533,7 @@ async function beginRecording() {
       await cleanupRecordingAudio();
       state.recorder = null;
       $("[data-action='toggle-record']").classList.remove("recording");
-      $("#record-label").textContent = "Record now";
+      $("#record-label").textContent = "Start recording";
       updateAudioSourceUI();
       setModal("#capture-modal", false);
       await uploadRecording(blob, `Meeting-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-")}.${blob.type.includes("mp4") ? "m4a" : "webm"}`);
@@ -509,10 +593,22 @@ async function pollJob(id) {
   }
 }
 
-async function copyText(text, success = "Copied") {
+function showButtonFeedback(button, label) {
+  if (!button) return;
+  clearTimeout(button.feedbackTimer);
+  if (!button.dataset.feedbackHtml) button.dataset.feedbackHtml = button.innerHTML;
+  button.classList.add("feedback-success");
+  button.innerHTML = `<span class="feedback-check" aria-hidden="true">✓</span><span>${escapeHtml(label)}</span>`;
+  button.feedbackTimer = setTimeout(() => {
+    if (!button.isConnected) return;
+    button.innerHTML = button.dataset.feedbackHtml;
+    button.classList.remove("feedback-success");
+  }, 1500);
+}
+
+async function copyText(text, button, label = "Copied") {
   try {
     await navigator.clipboard.writeText(text);
-    toast(success);
   } catch {
     const area = document.createElement("textarea");
     area.value = text;
@@ -520,8 +616,8 @@ async function copyText(text, success = "Copied") {
     area.select();
     document.execCommand("copy");
     area.remove();
-    toast(success);
   }
+  showButtonFeedback(button, label);
 }
 
 function findAction(id) { return (state.current?.actions || []).find((item) => item.id === id); }
@@ -537,7 +633,7 @@ function actionsText(actions) {
   }).join("\n\n");
 }
 
-function downloadCalendar(action) {
+function downloadCalendar(action, button) {
   const due = (action.due || new Date().toISOString().slice(0, 10)).replaceAll("-", "");
   const escapeIcs = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
   const nextDate = new Date(`${action.due || new Date().toISOString().slice(0, 10)}T12:00:00`);
@@ -549,7 +645,7 @@ function downloadCalendar(action) {
   link.download = `${action.text.replace(/[^a-z0-9]+/gi, "-").slice(0, 48) || "meeting-action"}.ics`;
   link.click();
   URL.revokeObjectURL(link.href);
-  toast("Calendar event created locally");
+  showButtonFeedback(button, "Added");
 }
 
 function markdownMeeting() {
@@ -557,12 +653,13 @@ function markdownMeeting() {
   return `# ${meeting.title}\n\n${meeting.summary}\n\n## Decisions\n${(meeting.decisions || []).map((item) => `- ${item}`).join("\n") || "- None captured"}\n\n## Actions\n${(meeting.actions || []).map((item) => `- [${item.completed ? "x" : " "}] ${item.text} — ${item.owner || "Unassigned"}${item.due ? ` (due ${item.due})` : ""}`).join("\n") || "- None captured"}\n\n## Transcript\n${(meeting.transcript || []).map((turn) => `**${formatTimestamp(turn.start)} · ${turn.speaker}:** ${turn.text}`).join("\n\n")}\n`;
 }
 
-function exportMarkdown() {
+function exportMarkdown(button) {
   const link = document.createElement("a");
   link.href = URL.createObjectURL(new Blob([markdownMeeting()], { type: "text/markdown" }));
   link.download = `${state.current.title.replace(/[^a-z0-9]+/gi, "-").toLowerCase().slice(0, 60)}.md`;
   link.click();
   URL.revokeObjectURL(link.href);
+  showButtonFeedback(button, "Saved");
 }
 
 function filterTranscript() {
@@ -610,30 +707,32 @@ async function renameSpeaker(oldName) {
 document.addEventListener("click", async (event) => {
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
+  if (trigger.tagName === "A") event.preventDefault();
   const action = trigger.dataset.action;
-  if (action === "home") showWelcome();
+  if (action === "home") { showWelcome(); $("#sidebar").classList.remove("open"); }
+  if (action === "show-library") { showLibrary(); $("#sidebar").classList.remove("open"); }
   if (action === "open-sidebar") $("#sidebar").classList.add("open");
   if (action === "close-sidebar") $("#sidebar").classList.remove("open");
-  if (action === "new-meeting") setModal("#capture-modal", true);
-  if (action === "close-capture" && !state.recording) setModal("#capture-modal", false);
+  if (action === "new-meeting") openCapture();
+  if (action === "close-capture" && !state.recording) closeCapture();
   if (action === "choose-file") $("#file-input").click();
   if (action === "toggle-record") beginRecording();
   if (action === "toggle-audio-source") setAudioSource(trigger.dataset.source, !state.audioSources[trigger.dataset.source]);
   if (action === "create-demo") createDemo();
-  if (action === "open-meeting") openMeeting(trigger.dataset.id);
+  if (action === "open-meeting") { openMeeting(trigger.dataset.id); $("#sidebar").classList.remove("open"); }
   if (action === "refresh") refreshMeetings().then(() => toast("Meetings refreshed"));
-  if (action === "show-actions") showActions();
+  if (action === "show-actions") { showActions(); $("#sidebar").classList.remove("open"); }
   if (action === "settings") showSettings();
   if (action === "close-settings") setModal("#settings-modal", false);
   if (action === "tab") { state.tab = trigger.dataset.tab; renderMeeting(); }
-  if (action === "copy-summary") copyText(`${state.current.title}\n\n${state.current.summary}\n\nDecisions:\n${(state.current.decisions || []).map((item) => `• ${item}`).join("\n")}`, "Summary copied");
-  if (action === "export-markdown") exportMarkdown();
-  if (action === "copy-action") { const item = findAction(trigger.dataset.id); if (item) copyText(actionText(item), "Action copied"); }
+  if (action === "copy-summary") copyText(`${state.current.title}\n\n${state.current.summary}\n\nDecisions:\n${(state.current.decisions || []).map((item) => `• ${item}`).join("\n")}`, trigger, "Copied");
+  if (action === "export-markdown") exportMarkdown(trigger);
+  if (action === "copy-action") { const item = findAction(trigger.dataset.id); if (item) copyText(actionText(item), trigger, "Copied"); }
   if (action === "copy-all-actions") {
     const items = trigger.dataset.scope === "all" ? state.allActions : (state.current?.actions || []);
-    if (items.length) copyText(actionsText(items), `${items.length} action${items.length === 1 ? "" : "s"} copied`);
+    if (items.length) copyText(actionsText(items), trigger, "Copied");
   }
-  if (action === "calendar-action") { const item = findAction(trigger.dataset.id); if (item) downloadCalendar(item); }
+  if (action === "calendar-action") { const item = findAction(trigger.dataset.id); if (item) downloadCalendar(item, trigger); }
   if (action === "toggle-action") {
     const item = findAction(trigger.dataset.id);
     if (item) {
@@ -659,6 +758,7 @@ $("#voice-file-input").addEventListener("change", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  if (event.target.matches("#library-search")) renderLibraryCards();
   if (event.target.matches("#transcript-search")) filterTranscript();
   if (event.target.matches("#global-search") && state.current) {
     state.tab = "transcript";
@@ -668,14 +768,17 @@ document.addEventListener("input", (event) => {
   }
 });
 
-document.addEventListener("change", (event) => { if (event.target.matches("#speaker-filter")) filterTranscript(); });
+document.addEventListener("change", (event) => {
+  if (event.target.matches("#speaker-filter")) filterTranscript();
+  if (event.target.matches("#library-sort")) renderLibraryCards();
+});
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); $("#global-search").focus(); }
   if (event.key === "Escape") { if (!state.recording) setModal("#capture-modal", false); setModal("#settings-modal", false); }
 });
 
 async function init() {
-  const linkedMeeting = location.hash.slice(1);
+  const linkedView = location.hash.slice(1);
   $("#global-search-wrap").hidden = true;
   showWelcome();
   try {
@@ -683,7 +786,10 @@ async function init() {
     state.meetings = meetings.meetings || [];
     state.health = health;
     renderMeetingList();
-    if (/^meeting_[a-z0-9]+$/i.test(linkedMeeting)) await openMeeting(linkedMeeting);
+    if (/^meeting_[a-z0-9]+$/i.test(linkedView)) await openMeeting(linkedView);
+    if (linkedView === "library") showLibrary();
+    if (linkedView === "actions") await showActions();
+    if (linkedView === "record") openCapture();
   } catch (error) { toast(`Local service unavailable: ${error.message}`, "error"); }
 }
 

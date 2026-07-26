@@ -52,7 +52,7 @@ class ServerTests(unittest.TestCase):
             page = response.read().decode("utf-8")
             self.assertIn('data-source="mic"', page)
             self.assertIn('data-source="device"', page)
-            self.assertIn("switch either audio source on or off while recording", page)
+            self.assertIn("Change these anytime while recording", page)
 
 
 if __name__ == "__main__":
