@@ -11,7 +11,7 @@ It ships with a polished zero-dependency demo mode. For real audio processing, p
 - Handles Hindi–English code-switching, including Devanagari and Romanized Hindi, while preserving English names and technical terms.
 - Diarizes with local sherpa-onnx models, recognizes enrolled voices, and labels every unmatched voice as a stable unknown speaker.
 - Produces decisions, risks, discussion notes, and actionable tasks using a local GGUF model through `llama-cpp-python` (with a deterministic offline fallback).
-- Copies individual actions, downloads calendar events, and prepares an Asana-safe clipboard payload without silently sending meeting data off-device.
+- Copies individual actions or complete action lists and downloads calendar events without sending meeting data off-device.
 - Stores data locally and binds only to the loopback interface.
 
 Device audio availability depends on the browser and operating system. When it is enabled, choose a browser tab or screen in the share picker and turn on its **Share audio** option. Tab audio is the most consistently supported choice.
@@ -116,7 +116,7 @@ Python 3.12 is installed inside the project. PyAV handles common audio/video for
 
 ## Privacy boundary
 
-The server rejects non-loopback clients, sets a restrictive content security policy, and does not contain analytics, telemetry, remote fonts, CDNs, or network model identifiers. Calendar actions are generated as local `.ics` files. The Asana action copies a structured task payload; opening/pasting it into Asana is an explicit user action because sending data directly to Asana would contradict the local-only guarantee.
+The server rejects non-loopback clients, sets a restrictive content security policy, and does not contain analytics, telemetry, remote fonts, CDNs, or network model identifiers. Calendar actions are generated as local `.ics` files. Clipboard actions remain explicit and local so meeting data is never silently sent to another service.
 
 Data defaults to the operating system's application-data directory. Override it for managed deployments:
 

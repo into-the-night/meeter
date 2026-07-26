@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="light">
-    <meta name="theme-color" content="#f7f7fa">
+    <meta name="theme-color" content="#f6f3ec">
     <title>Meeter · Local meeting intelligence</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/styles.css">
@@ -24,8 +24,8 @@
           New meeting
         </button>
         <nav class="primary-nav" aria-label="Primary">
-          <button class="nav-item active" data-action="home"><span class="nav-icon">⌂</span>All meetings</button>
-          <button class="nav-item" data-action="show-actions"><span class="nav-icon">✓</span>My actions <span class="nav-badge" id="action-count">0</span></button>
+          <button class="nav-item active" data-action="home"><span class="nav-icon">⌂</span>Meeting library</button>
+          <button class="nav-item" data-action="show-actions"><span class="nav-icon">✓</span>Action hub <span class="nav-badge" id="action-count">0</span></button>
         </nav>
         <div class="sidebar-section">
           <div class="section-label"><span>Recent</span><button class="tiny-button" data-action="refresh" aria-label="Refresh">↻</button></div>
@@ -44,10 +44,10 @@
           <div class="top-actions">
             <label class="search-box" id="global-search-wrap">
               <span>⌕</span>
-              <input type="search" id="global-search" placeholder="Search transcript" autocomplete="off">
+              <input type="search" id="global-search" placeholder="Search this meeting" autocomplete="off">
               <kbd>⌘ K</kbd>
             </label>
-            <button class="avatar-button" data-action="settings" aria-label="Open settings">AS</button>
+            <button class="avatar-button" data-action="settings" aria-label="Open settings">M</button>
           </div>
         </header>
         <div id="app" class="app-content" aria-live="polite"></div>

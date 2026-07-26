@@ -1,6 +1,7 @@
 const state = {
   meetings: [],
   current: null,
+  allActions: [],
   tab: "overview",
   health: null,
   speakers: [],
@@ -85,24 +86,43 @@ function renderMeetingList() {
   $("#action-count").textContent = String(openActions);
 }
 
+function setActiveNav(view) {
+  $$("[data-action='home'], [data-action='show-actions']").forEach((item) => {
+    item.classList.toggle("active", item.dataset.action === view);
+  });
+}
+
 function showWelcome() {
   state.current = null;
   state.tab = "overview";
   if (location.hash) history.replaceState(null, "", location.pathname);
   $("#breadcrumb").textContent = "Meetings";
   $("#global-search-wrap").hidden = true;
+  setActiveNav("home");
   renderMeetingList();
   $("#app").innerHTML = `
     <section class="welcome">
       <div class="welcome-inner">
-        <div class="welcome-visual" aria-hidden="true"><div class="wave"><i></i><i></i><i></i><i></i><i></i></div></div>
-        <h1>Your meetings,<br><em>finally useful.</em></h1>
-        <p>Private, searchable minutes with clear decisions and actions. Every word is processed locally on this laptop.</p>
-        <div class="welcome-buttons">
-          <button class="primary-button" data-action="new-meeting">＋ Start a meeting</button>
-          <button class="secondary-button" data-action="create-demo">Explore demo</button>
+        <div class="welcome-copy">
+          <span class="hero-pill"><i></i> Private meeting intelligence</span>
+          <h1>Talk it through.<br><em>Leave aligned.</em></h1>
+          <p>Meeter turns every conversation into crisp decisions, searchable context, and action items—without your data leaving this laptop.</p>
         </div>
-        <div class="welcome-trust"><span>Runs offline</span><span>Recognizes known voices</span><span>Supports unknown speakers</span></div>
+        <div class="welcome-buttons">
+          <button class="primary-button" data-action="new-meeting"><span class="button-orb">●</span> Start a meeting</button>
+          <button class="secondary-button" data-action="create-demo">Explore a sample <span>→</span></button>
+        </div>
+        <div class="welcome-visual" aria-hidden="true">
+          <div class="visual-glow"></div>
+          <div class="preview-card preview-card-main">
+            <div class="preview-top"><span><i></i> Live conversation</span><b>08:42</b></div>
+            <div class="preview-wave">${Array.from({ length: 29 }, () => "<i></i>").join("")}</div>
+            <div class="preview-speaker"><span>MC</span><p><b>Maya</b><small>“Let’s lock the rollout plan today…”</small></p></div>
+          </div>
+          <div class="preview-card preview-card-action"><span class="preview-check">✓</span><p><b>Action captured</b><small>Publish revised technical plan</small></p></div>
+          <div class="preview-card preview-card-summary"><span>✦</span><p><b>Clear by default</b><small>Decisions, owners, and next steps</small></p></div>
+        </div>
+        <div class="welcome-trust"><span>100% local</span><span>No meeting bots</span><span>Built for real conversations</span></div>
       </div>
     </section>`;
 }
@@ -113,6 +133,7 @@ async function openMeeting(id) {
     state.tab = "overview";
     history.replaceState(null, "", `#${id}`);
     $("#global-search-wrap").hidden = false;
+    setActiveNav("home");
     renderMeeting();
     renderMeetingList();
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -185,8 +206,8 @@ function renderOverview() {
         </article>
       </div>
       <aside class="column">
-        <article class="card card-pad">
-          <div class="section-head"><h2>Action items <span class="count-badge">${(meeting.actions || []).length}</span></h2></div>
+        <article class="card card-pad action-section">
+          <div class="section-head"><h2>Action items <span class="count-badge">${(meeting.actions || []).length}</span></h2>${(meeting.actions || []).length ? `<button class="copy-all-button" data-action="copy-all-actions"><span>▣</span> Copy all</button>` : ""}</div>
           ${renderActions(meeting.actions || [])}
         </article>
         ${risks.length ? `<article class="card card-pad"><div class="section-head"><h2>Watch-outs</h2></div>${risks.map((risk) => `<div class="risk-item"><span class="risk-icon">△</span><span>${escapeHtml(risk)}</span></div>`).join("")}</article>` : ""}
@@ -210,7 +231,6 @@ function renderActions(actions) {
       <div class="action-buttons">
         <button class="mini-action" data-action="copy-action" data-id="${escapeHtml(action.id)}">Copy</button>
         <button class="mini-action" data-action="calendar-action" data-id="${escapeHtml(action.id)}">＋ Calendar</button>
-        <button class="mini-action" data-action="asana-action" data-id="${escapeHtml(action.id)}">↗ Asana</button>
       </div>
     </div>`).join("")}</div>`;
 }
@@ -261,10 +281,12 @@ function renderDetails() {
 async function showActions() {
   const full = await Promise.all(state.meetings.map((item) => api(`/api/meetings/${encodeURIComponent(item.id)}`)));
   const actions = full.flatMap((meeting) => (meeting.actions || []).map((action) => ({ ...action, meetingTitle: meeting.title, meetingId: meeting.id })));
+  state.allActions = actions;
   state.current = null;
   $("#breadcrumb").innerHTML = `<strong>My actions</strong>`;
   $("#global-search-wrap").hidden = true;
-  $("#app").innerHTML = `<section><header class="meeting-header"><div><div class="meeting-kicker">Across all meetings</div><h1>My actions</h1><div class="meeting-meta"><span>${actions.filter((item) => !item.completed).length} open commitments</span></div></div></header><div class="tabs"></div><div class="tab-panel"><article class="card card-pad"><div class="actions-list">${actions.length ? actions.map((action) => `<div class="action-card ${action.completed ? "completed" : ""}"><div class="action-main"><span class="decision-check">${action.completed ? "✓" : "→"}</span><div><p class="action-title">${escapeHtml(action.text)}</p><p class="action-context">${escapeHtml(action.meetingTitle)} · ${escapeHtml(action.owner || "Unassigned")}${action.due ? ` · Due ${formatDate(action.due)}` : ""}</p></div></div><div class="action-buttons"><button class="mini-action" data-action="open-meeting" data-id="${escapeHtml(action.meetingId)}">Open meeting</button></div></div>`).join("") : `<div class="empty-state">No actions yet.</div>`}</div></article></div></section>`;
+  setActiveNav("show-actions");
+  $("#app").innerHTML = `<section class="actions-page"><header class="meeting-header"><div><div class="meeting-kicker">Across all meetings</div><h1>Action hub</h1><div class="meeting-meta"><span>${actions.filter((item) => !item.completed).length} open commitments</span><span>${actions.length} total</span></div></div>${actions.length ? `<button class="share-button" data-action="copy-all-actions" data-scope="all"><span>▣</span> Copy all actions</button>` : ""}</header><div class="tabs"></div><div class="tab-panel"><article class="card card-pad action-section"><div class="actions-list">${actions.length ? actions.map((action) => `<div class="action-card ${action.completed ? "completed" : ""}"><div class="action-main"><span class="decision-check">${action.completed ? "✓" : "→"}</span><div><p class="action-title">${escapeHtml(action.text)}</p><p class="action-context">${escapeHtml(action.meetingTitle)} · ${escapeHtml(action.owner || "Unassigned")}${action.due ? ` · Due ${formatDate(action.due)}` : ""}</p></div></div><div class="action-buttons"><button class="mini-action" data-action="open-meeting" data-id="${escapeHtml(action.meetingId)}">Open meeting →</button></div></div>`).join("") : `<div class="empty-state">No actions yet.</div>`}</div></article></div></section>`;
   renderMeetingList();
 }
 
@@ -508,6 +530,13 @@ function actionText(action) {
   return `${action.text}\nOwner: ${action.owner || "Unassigned"}${action.due ? `\nDue: ${action.due}` : ""}${action.context ? `\nContext: ${action.context}` : ""}`;
 }
 
+function actionsText(actions) {
+  return actions.map((action, index) => {
+    const source = action.meetingTitle ? `\nMeeting: ${action.meetingTitle}` : "";
+    return `${index + 1}. ${actionText(action)}${source}`;
+  }).join("\n\n");
+}
+
 function downloadCalendar(action) {
   const due = (action.due || new Date().toISOString().slice(0, 10)).replaceAll("-", "");
   const escapeIcs = (value) => String(value || "").replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/,/g, "\\,").replace(/;/g, "\\;");
@@ -600,8 +629,11 @@ document.addEventListener("click", async (event) => {
   if (action === "copy-summary") copyText(`${state.current.title}\n\n${state.current.summary}\n\nDecisions:\n${(state.current.decisions || []).map((item) => `• ${item}`).join("\n")}`, "Summary copied");
   if (action === "export-markdown") exportMarkdown();
   if (action === "copy-action") { const item = findAction(trigger.dataset.id); if (item) copyText(actionText(item), "Action copied"); }
+  if (action === "copy-all-actions") {
+    const items = trigger.dataset.scope === "all" ? state.allActions : (state.current?.actions || []);
+    if (items.length) copyText(actionsText(items), `${items.length} action${items.length === 1 ? "" : "s"} copied`);
+  }
   if (action === "calendar-action") { const item = findAction(trigger.dataset.id); if (item) downloadCalendar(item); }
-  if (action === "asana-action") { const item = findAction(trigger.dataset.id); if (item) copyText(`${item.text}\n\n${item.context || ""}\nOwner: ${item.owner || "Unassigned"}\nDue: ${item.due || "Not set"}`, "Asana-ready task copied — paste it when ready"); }
   if (action === "toggle-action") {
     const item = findAction(trigger.dataset.id);
     if (item) {
