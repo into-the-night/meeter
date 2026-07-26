@@ -55,53 +55,77 @@
     <input id="voice-file-input" type="file" accept="audio/*,.m4a,.wav,.mp3,.ogg,.flac,.webm" hidden>
 
     <div class="capture-layer" id="capture-modal" hidden>
-      <section class="capture-screen" role="dialog" aria-modal="true" aria-labelledby="capture-title">
+      <section class="capture-screen" aria-labelledby="capture-title">
         <header class="capture-screen-top">
-          <span class="capture-brand"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><strong>meeter</strong></span>
-          <button class="capture-back" data-action="close-capture" aria-label="Return to Meeter"><span>←</span> Back</button>
+          <button class="capture-back" data-action="close-capture" aria-label="Return to Meeter">
+            <span aria-hidden="true">←</span> Back
+          </button>
+          <h1 id="capture-title">New recording</h1>
+          <button class="capture-import-link" data-action="choose-file"><span aria-hidden="true">↥</span> Import audio</button>
         </header>
-        <div class="capture-screen-content">
-          <div class="capture-intro">
-            <span class="capture-eyebrow"><i></i> Ready when you are</span>
-            <h2 id="capture-title">Capture the conversation.<br><em>Keep the clarity.</em></h2>
-            <p>Record the room, include shared device audio, or bring an existing file. Meeter turns it into notes and next steps locally.</p>
+
+        <div class="recording-workspace">
+          <div class="recording-status" id="recording-status" hidden>
+            <span class="status-dot"></span>
+            <span id="recording-status-label"></span>
           </div>
-          <div class="recording-stage" aria-hidden="true">
-            <div class="recording-halo"></div>
-            <div class="recording-core"><span></span></div>
-            <div class="recording-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-          </div>
-          <div class="capture-controls">
-            <div class="source-heading"><strong>Audio sources</strong><small>Change these anytime while recording</small></div>
-            <div class="audio-source-controls" aria-label="Recording audio sources">
-              <button class="audio-source-toggle active" type="button" role="switch" aria-checked="true" data-action="toggle-audio-source" data-source="mic">
-                <span class="source-icon" aria-hidden="true">●</span>
-                <span><strong>Microphone</strong><small id="mic-source-status">On</small></span>
-                <span class="toggle-track" aria-hidden="true"><i></i></span>
-              </button>
-              <button class="audio-source-toggle" type="button" role="switch" aria-checked="false" data-action="toggle-audio-source" data-source="device">
-                <span class="source-icon device-icon" aria-hidden="true">▣</span>
-                <span><strong>Device audio</strong><small id="device-source-status">Off</small></span>
-                <span class="toggle-track" aria-hidden="true"><i></i></span>
-              </button>
+          <time class="recording-time" id="recording-time" datetime="PT0S">00:00</time>
+          <div class="audio-detection" id="audio-detection">
+            <div class="live-waveform" id="live-waveform" aria-hidden="true">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
             </div>
-            <p class="device-audio-note">Device audio opens the browser share picker. Choose a tab or screen and enable its audio.</p>
-            <div class="capture-options">
-              <button class="capture-option capture-record" data-action="toggle-record">
-                <span class="option-icon record-icon">●</span>
-                <span><strong id="record-label">Start recording</strong><small id="record-subtitle">Microphone on · Device audio off</small></span>
-                <span class="arrow">→</span>
-              </button>
-              <button class="capture-option capture-import" data-action="choose-file">
-                <span class="option-icon upload-icon">↥</span>
-                <span><strong>Import a recording</strong><small>Audio or video · up to 750 MB</small></span>
-                <span class="arrow">→</span>
-              </button>
-            </div>
-            <div class="capture-trust"><span>✓</span> Audio stays on this device</div>
           </div>
         </div>
+
+        <div class="recording-controls-wrap">
+          <div class="mic-device-menu" id="mic-device-menu" hidden>
+            <label for="microphone-select">Microphone</label>
+            <select id="microphone-select" aria-label="Select microphone">
+              <option value="">Default microphone</option>
+            </select>
+          </div>
+          <div class="recording-controls" aria-label="Recording controls">
+            <div class="control-group">
+              <button class="round-control source-control active" type="button" role="switch" aria-checked="true" data-action="toggle-audio-source" data-source="mic" aria-label="Turn microphone off">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.2a3.7 3.7 0 0 0 3.7-3.7V6.7a3.7 3.7 0 1 0-7.4 0v4.8a3.7 3.7 0 0 0 3.7 3.7Z"></path><path d="M5.7 11.1v.5a6.3 6.3 0 0 0 12.6 0v-.5M12 17.9V21M8.7 21h6.6"></path></svg>
+                <span class="off-slash"></span>
+              </button>
+              <button class="device-menu-button" type="button" data-action="toggle-mic-menu" aria-label="Choose microphone" aria-expanded="false">⌃</button>
+            </div>
+            <button class="round-control source-control" type="button" role="switch" aria-checked="false" data-action="toggle-audio-source" data-source="device" aria-label="Turn device audio on">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9v6h4l5 4V5L9 9H5Z"></path><path d="M17 9a4.2 4.2 0 0 1 0 6M19.6 6.5a7.8 7.8 0 0 1 0 11"></path></svg>
+              <span class="off-slash"></span>
+            </button>
+            <span class="control-divider" aria-hidden="true"></span>
+            <button class="round-control pause-control" type="button" data-action="pause-recording" aria-label="Pause recording" disabled>
+              <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 6v12M16 6v12"></path></svg>
+              <svg class="resume-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 9 6-9 6V6Z"></path></svg>
+            </button>
+            <button class="round-control cancel-control" type="button" data-action="cancel-recording" aria-label="Cancel recording" disabled>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7 7 17"></path></svg>
+            </button>
+            <button class="finish-control" type="button" data-action="toggle-record" aria-label="Start recording">
+              <span class="record-glyph" aria-hidden="true"></span>
+              <span id="record-label">Start recording</span>
+            </button>
+          </div>
+          <span id="mic-source-status" hidden>On</span>
+          <span id="device-source-status" hidden>Off</span>
+          <span id="record-subtitle" hidden>Microphone on · Device audio off</span>
+        </div>
       </section>
+    </div>
+
+    <div class="modal-layer cancel-confirm-layer" id="cancel-confirm-modal" hidden>
+      <div class="modal cancel-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="cancel-confirm-title" aria-describedby="cancel-confirm-copy">
+        <span class="cancel-confirm-icon" aria-hidden="true">×</span>
+        <h2 id="cancel-confirm-title">Discard this recording?</h2>
+        <p id="cancel-confirm-copy">The audio captured so far will be permanently removed.</p>
+        <div class="cancel-confirm-actions">
+          <button class="secondary-button" data-action="dismiss-cancel">Keep recording</button>
+          <button class="discard-button" data-action="confirm-cancel">Discard recording</button>
+        </div>
+      </div>
     </div>
 
     <div class="modal-layer" id="process-modal" hidden>

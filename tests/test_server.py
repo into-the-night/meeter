@@ -52,7 +52,13 @@ class ServerTests(unittest.TestCase):
             page = response.read().decode("utf-8")
             self.assertIn('data-source="mic"', page)
             self.assertIn('data-source="device"', page)
-            self.assertIn("Change these anytime while recording", page)
+            self.assertIn('id="microphone-select"', page)
+            self.assertIn('data-action="pause-recording"', page)
+            self.assertIn('data-action="cancel-recording"', page)
+            self.assertIn('id="cancel-confirm-modal"', page)
+            self.assertIn('data-action="confirm-cancel"', page)
+            self.assertNotIn("Audio check starts when you record", page)
+            self.assertNotIn("Ready to record", page)
 
 
 if __name__ == "__main__":

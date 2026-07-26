@@ -17,7 +17,13 @@ const state = {
   audioSources: { mic: true, device: false },
   chunks: [],
   recordStarted: 0,
+  pausedStarted: 0,
+  totalPaused: 0,
   recordTimer: null,
+  meterFrame: null,
+  analyser: null,
+  cancelled: false,
+  micDeviceId: "",
   captureReturnHash: "",
 };
 
@@ -103,6 +109,7 @@ function setActiveNav(view) {
 }
 
 function showWelcome() {
+  hideCaptureWorkspace();
   state.current = null;
   state.tab = "overview";
   if (location.hash) history.replaceState(null, "", location.pathname);
@@ -133,6 +140,7 @@ function showWelcome() {
         <div class="welcome-trust"><span>100% local</span><span>No meeting bots</span><span>Built for real conversations</span></div>
       </div>
     </section>`;
+  updateRecordingEntryPoints();
 }
 
 function libraryCard(meeting) {
@@ -177,6 +185,7 @@ function renderLibraryCards() {
 }
 
 function showLibrary() {
+  hideCaptureWorkspace();
   state.current = null;
   history.replaceState(null, "", "#library");
   $("#global-search-wrap").hidden = true;
@@ -196,9 +205,11 @@ function showLibrary() {
       <div id="library-grid" class="library-grid"></div>
     </section>`;
   renderLibraryCards();
+  updateRecordingEntryPoints();
 }
 
 async function openMeeting(id) {
+  hideCaptureWorkspace();
   try {
     state.current = await api(`/api/meetings/${encodeURIComponent(id)}`);
     state.tab = "overview";
@@ -207,6 +218,7 @@ async function openMeeting(id) {
     setActiveNav("show-library");
     renderMeeting();
     renderMeetingList();
+    updateRecordingEntryPoints();
     window.scrollTo({ top: 0, behavior: "smooth" });
   } catch (error) { toast(error.message, "error"); }
 }
@@ -349,6 +361,7 @@ function renderDetails() {
 }
 
 async function showActions() {
+  hideCaptureWorkspace();
   const full = await Promise.all(state.meetings.map((item) => api(`/api/meetings/${encodeURIComponent(item.id)}`)));
   const actions = full.flatMap((meeting) => (meeting.actions || []).map((action) => ({ ...action, meetingTitle: meeting.title, meetingId: meeting.id })));
   state.allActions = actions;
@@ -358,6 +371,7 @@ async function showActions() {
   setActiveNav("show-actions");
   $("#app").innerHTML = `<section class="actions-page"><header class="meeting-header"><div><div class="meeting-kicker">Across all meetings</div><h1>Action hub</h1><div class="meeting-meta"><span>${actions.filter((item) => !item.completed).length} open commitments</span><span>${actions.length} total</span></div></div>${actions.length ? `<button class="share-button feedback-button" data-action="copy-all-actions" data-scope="all">${copyIcon()}<span>Copy all actions</span></button>` : ""}</header><div class="tabs"></div><div class="tab-panel"><article class="card card-pad action-section"><div class="actions-list">${actions.length ? actions.map((action) => `<div class="action-card ${action.completed ? "completed" : ""}"><div class="action-main"><span class="decision-check">${action.completed ? "✓" : "→"}</span><div><p class="action-title">${escapeHtml(action.text)}</p><p class="action-context">${escapeHtml(action.meetingTitle)} · ${escapeHtml(action.owner || "Unassigned")}${action.due ? ` · Due ${formatDate(action.due)}` : ""}</p></div></div><div class="action-buttons"><button class="mini-action" data-action="open-meeting" data-id="${escapeHtml(action.meetingId)}">Open meeting →</button></div></div>`).join("") : `<div class="empty-state">No actions yet.</div>`}</div></article></div></section>`;
   renderMeetingList();
+  updateRecordingEntryPoints();
 }
 
 async function createDemo() {
@@ -376,10 +390,35 @@ function setModal(id, visible) {
   if (id === "#capture-modal") document.body.classList.toggle("capture-open", visible);
 }
 
-function openCapture() {
-  state.captureReturnHash = location.hash === "#record" ? "" : location.hash;
+function hideCaptureWorkspace() {
+  if (!$("#capture-modal")?.hidden) setModal("#capture-modal", false);
+}
+
+function updateRecordingEntryPoints() {
+  const elapsed = formatTimestamp(recordingElapsed());
+  $$("[data-action='new-meeting']").forEach((button) => {
+    if (state.recording) {
+      if (!button.dataset.idleHtml) button.dataset.idleHtml = button.innerHTML;
+      button.classList.add("recording-entry");
+      button.setAttribute("aria-label", `Return to recording, ${elapsed} elapsed`);
+      button.innerHTML = `
+        <span class="live-record-icon" aria-hidden="true"><i></i></span>
+        <span class="recording-entry-copy"><strong>Recording</strong><time datetime="PT${Math.floor(recordingElapsed())}S">${elapsed}</time></span>`;
+    } else if (button.dataset.idleHtml) {
+      button.innerHTML = button.dataset.idleHtml;
+      delete button.dataset.idleHtml;
+      button.classList.remove("recording-entry");
+      button.removeAttribute("aria-label");
+    }
+  });
+}
+
+async function openCapture() {
+  if (location.hash !== "#record") state.captureReturnHash = location.hash;
   history.replaceState(null, "", "#record");
   setModal("#capture-modal", true);
+  updateRecordingUI();
+  await refreshMicrophoneDevices();
 }
 
 function closeCapture() {
@@ -394,6 +433,7 @@ function updateAudioSourceUI() {
     if (button) {
       button.classList.toggle("active", enabled);
       button.setAttribute("aria-checked", String(enabled));
+      button.setAttribute("aria-label", `Turn ${source === "mic" ? "microphone" : "device audio"} ${enabled ? "off" : "on"}`);
     }
     $(`#${source}-source-status`).textContent = enabled ? "On" : "Off";
   }
@@ -404,6 +444,76 @@ function updateAudioSourceUI() {
     ];
     $("#record-subtitle").textContent = sources.join(" · ");
   }
+}
+
+async function refreshMicrophoneDevices() {
+  const select = $("#microphone-select");
+  if (!select || !navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const devices = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === "audioinput");
+    const current = state.micDeviceId || select.value;
+    select.innerHTML = `<option value="">Default microphone</option>${devices.map((device, index) => (
+      `<option value="${escapeHtml(device.deviceId)}">${escapeHtml(device.label || `Microphone ${index + 1}`)}</option>`
+    )).join("")}`;
+    if ([...select.options].some((option) => option.value === current)) select.value = current;
+  } catch {}
+}
+
+function recordingElapsed() {
+  if (!state.recordStarted) return 0;
+  const endpoint = state.pausedStarted || Date.now();
+  return Math.max(0, (endpoint - state.recordStarted - state.totalPaused) / 1000);
+}
+
+function updateRecordingUI() {
+  const paused = state.recorder?.state === "paused";
+  const active = state.recording;
+  const status = $("#recording-status");
+  status.hidden = !active;
+  status?.classList.toggle("is-recording", active && !paused);
+  status?.classList.toggle("is-paused", Boolean(paused));
+  $("#recording-status-label").textContent = paused ? "Recording paused" : active ? "Recording" : "Ready to record";
+  $("#recording-time").textContent = formatTimestamp(recordingElapsed());
+  $("#recording-time").setAttribute("datetime", `PT${Math.floor(recordingElapsed())}S`);
+  $(".pause-control").disabled = !active;
+  $(".pause-control").classList.toggle("is-paused", Boolean(paused));
+  $(".pause-control").setAttribute("aria-label", paused ? "Resume recording" : "Pause recording");
+  $(".cancel-control").disabled = !active;
+  $(".finish-control").classList.toggle("is-recording", active);
+  $(".finish-control").setAttribute("aria-label", active ? "Finish recording" : "Start recording");
+  $("#record-label").textContent = active ? "Finish" : "Start recording";
+  $("#audio-detection").classList.toggle("is-paused", Boolean(paused));
+  updateRecordingEntryPoints();
+}
+
+function stopAudioMeter() {
+  if (state.meterFrame) cancelAnimationFrame(state.meterFrame);
+  state.meterFrame = null;
+  state.analyser = null;
+  $$("#live-waveform i").forEach((bar) => { bar.style.height = ""; });
+}
+
+function startAudioMeter() {
+  if (!state.audioContext || !state.mixBus) return;
+  state.analyser = state.audioContext.createAnalyser();
+  state.analyser.fftSize = 256;
+  state.analyser.smoothingTimeConstant = .72;
+  state.mixBus.connect(state.analyser);
+  const values = new Uint8Array(state.analyser.frequencyBinCount);
+  const bars = $$("#live-waveform i");
+  const draw = () => {
+    if (!state.analyser || !state.recording) return;
+    state.analyser.getByteFrequencyData(values);
+    const level = values.reduce((sum, value) => sum + value, 0) / values.length;
+    const hearingAudio = level > 5 && state.recorder?.state !== "paused";
+    $("#audio-detection").classList.toggle("has-audio", hearingAudio);
+    bars.forEach((bar, index) => {
+      const sample = values[Math.floor(index * values.length / bars.length)] || 0;
+      bar.style.height = `${Math.max(8, Math.min(100, sample * .72))}%`;
+    });
+    state.meterFrame = requestAnimationFrame(draw);
+  };
+  draw();
 }
 
 function setStreamAudioEnabled(stream, enabled) {
@@ -422,12 +532,33 @@ function connectAudioStream(source, stream) {
 async function acquireMicrophone() {
   if (!state.micStream?.getAudioTracks().some((track) => track.readyState === "live")) {
     state.micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true },
+      audio: {
+        deviceId: state.micDeviceId ? { exact: state.micDeviceId } : undefined,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
       video: false,
     });
     if (state.audioContext) connectAudioStream("mic", state.micStream);
+    await refreshMicrophoneDevices();
   }
   setStreamAudioEnabled(state.micStream, state.audioSources.mic);
+}
+
+async function changeMicrophone(deviceId) {
+  state.micDeviceId = deviceId;
+  if (!state.recording || !state.audioSources.mic) return;
+  const oldStream = state.micStream;
+  state.micStream = null;
+  try {
+    await acquireMicrophone();
+    oldStream?.getTracks().forEach((track) => track.stop());
+    toast("Microphone changed");
+  } catch (error) {
+    state.micStream = oldStream;
+    if (oldStream) connectAudioStream("mic", oldStream);
+    toast(error.name === "NotAllowedError" ? "Microphone access was not allowed" : error.message, "error");
+  }
 }
 
 async function acquireDeviceAudio() {
@@ -484,6 +615,7 @@ async function setAudioSource(source, enabled) {
 }
 
 async function cleanupRecordingAudio() {
+  stopAudioMeter();
   for (const node of Object.values(state.sourceNodes)) {
     try { node.disconnect(); } catch {}
   }
@@ -525,33 +657,77 @@ async function beginRecording() {
     const preferred = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find((type) => window.MediaRecorder?.isTypeSupported(type));
     state.recorder = new MediaRecorder(state.stream, preferred ? { mimeType: preferred } : undefined);
     state.chunks = [];
+    state.cancelled = false;
     state.recorder.ondataavailable = (event) => { if (event.data.size) state.chunks.push(event.data); };
     state.recorder.onstop = async () => {
       clearInterval(state.recordTimer);
       const blob = new Blob(state.chunks, { type: state.recorder.mimeType || "audio/webm" });
+      const cancelled = state.cancelled;
       state.recording = false;
+      setModal("#cancel-confirm-modal", false);
       await cleanupRecordingAudio();
       state.recorder = null;
-      $("[data-action='toggle-record']").classList.remove("recording");
-      $("#record-label").textContent = "Start recording";
+      state.recordStarted = 0;
+      state.pausedStarted = 0;
+      state.totalPaused = 0;
+      updateRecordingUI();
       updateAudioSourceUI();
+      if (cancelled) {
+        state.chunks = [];
+        closeCapture();
+        toast("Recording discarded");
+        return;
+      }
       setModal("#capture-modal", false);
       await uploadRecording(blob, `Meeting-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-")}.${blob.type.includes("mp4") ? "m4a" : "webm"}`);
     };
     state.recorder.start(1000);
     state.recording = true;
     state.recordStarted = Date.now();
-    $("[data-action='toggle-record']").classList.add("recording");
-    $("#record-label").textContent = "Stop & process";
+    state.pausedStarted = 0;
+    state.totalPaused = 0;
+    startAudioMeter();
+    updateRecordingUI();
     state.recordTimer = setInterval(() => {
-      $("#record-subtitle").textContent = `Recording · ${formatTimestamp((Date.now() - state.recordStarted) / 1000)}`;
-    }, 500);
+      updateRecordingUI();
+    }, 250);
   } catch (error) {
     await cleanupRecordingAudio();
     const deniedSource = state.audioSources.device ? "Audio capture" : "Microphone";
     toast(error.name === "NotAllowedError" ? `${deniedSource} access was not allowed` : error.message, "error");
     updateAudioSourceUI();
   }
+}
+
+function pauseRecording() {
+  if (!state.recording || !state.recorder) return;
+  if (state.recorder.state === "recording") {
+    state.recorder.pause();
+    state.pausedStarted = Date.now();
+    state.audioContext?.suspend();
+  } else if (state.recorder.state === "paused") {
+    state.totalPaused += Date.now() - state.pausedStarted;
+    state.pausedStarted = 0;
+    state.recorder.resume();
+    state.audioContext?.resume();
+  }
+  updateRecordingUI();
+}
+
+function cancelRecording() {
+  if (!state.recording || !state.recorder) return;
+  setModal("#cancel-confirm-modal", true);
+  $("[data-action='dismiss-cancel']")?.focus();
+}
+
+function confirmCancelRecording() {
+  if (!state.recording || !state.recorder) {
+    setModal("#cancel-confirm-modal", false);
+    return;
+  }
+  setModal("#cancel-confirm-modal", false);
+  state.cancelled = true;
+  if (state.recorder.state !== "inactive") state.recorder.stop();
 }
 
 async function uploadRecording(blob, filename) {
@@ -714,15 +890,24 @@ document.addEventListener("click", async (event) => {
   if (action === "open-sidebar") $("#sidebar").classList.add("open");
   if (action === "close-sidebar") $("#sidebar").classList.remove("open");
   if (action === "new-meeting") openCapture();
-  if (action === "close-capture" && !state.recording) closeCapture();
+  if (action === "close-capture") closeCapture();
   if (action === "choose-file") $("#file-input").click();
   if (action === "toggle-record") beginRecording();
+  if (action === "pause-recording") pauseRecording();
+  if (action === "cancel-recording") cancelRecording();
+  if (action === "dismiss-cancel") setModal("#cancel-confirm-modal", false);
+  if (action === "confirm-cancel") confirmCancelRecording();
+  if (action === "toggle-mic-menu") {
+    const menu = $("#mic-device-menu");
+    menu.hidden = !menu.hidden;
+    trigger.setAttribute("aria-expanded", String(!menu.hidden));
+  }
   if (action === "toggle-audio-source") setAudioSource(trigger.dataset.source, !state.audioSources[trigger.dataset.source]);
   if (action === "create-demo") createDemo();
   if (action === "open-meeting") { openMeeting(trigger.dataset.id); $("#sidebar").classList.remove("open"); }
   if (action === "refresh") refreshMeetings().then(() => toast("Meetings refreshed"));
   if (action === "show-actions") { showActions(); $("#sidebar").classList.remove("open"); }
-  if (action === "settings") showSettings();
+  if (action === "settings") { hideCaptureWorkspace(); showSettings(); }
   if (action === "close-settings") setModal("#settings-modal", false);
   if (action === "tab") { state.tab = trigger.dataset.tab; renderMeeting(); }
   if (action === "copy-summary") copyText(`${state.current.title}\n\n${state.current.summary}\n\nDecisions:\n${(state.current.decisions || []).map((item) => `• ${item}`).join("\n")}`, trigger, "Copied");
@@ -771,10 +956,19 @@ document.addEventListener("input", (event) => {
 document.addEventListener("change", (event) => {
   if (event.target.matches("#speaker-filter")) filterTranscript();
   if (event.target.matches("#library-sort")) renderLibraryCards();
+  if (event.target.matches("#microphone-select")) {
+    changeMicrophone(event.target.value);
+    $("#mic-device-menu").hidden = true;
+    $("[data-action='toggle-mic-menu']").setAttribute("aria-expanded", "false");
+  }
 });
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); $("#global-search").focus(); }
-  if (event.key === "Escape") { if (!state.recording) setModal("#capture-modal", false); setModal("#settings-modal", false); }
+  if (event.key === "Escape") {
+    if (!$("#cancel-confirm-modal").hidden) setModal("#cancel-confirm-modal", false);
+    else if (!$("#capture-modal").hidden) closeCapture();
+    setModal("#settings-modal", false);
+  }
 });
 
 async function init() {
