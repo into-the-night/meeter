@@ -44,6 +44,15 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertIn("default-src 'self'", response.headers["Content-Security-Policy"])
             self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+            self.assertIn("display-capture=(self)", response.headers["Permissions-Policy"])
+            self.assertIn("microphone=(self)", response.headers["Permissions-Policy"])
+
+    def test_recording_ui_offers_mic_and_device_audio(self):
+        with urllib.request.urlopen(self.base + "/", timeout=3) as response:
+            page = response.read().decode("utf-8")
+            self.assertIn('data-source="mic"', page)
+            self.assertIn('data-source="device"', page)
+            self.assertIn("switch either audio source on or off while recording", page)
 
 
 if __name__ == "__main__":

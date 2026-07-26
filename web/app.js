@@ -7,6 +7,13 @@ const state = {
   recording: false,
   recorder: null,
   stream: null,
+  micStream: null,
+  deviceStream: null,
+  audioContext: null,
+  mixDestination: null,
+  mixBus: null,
+  sourceNodes: {},
+  audioSources: { mic: true, device: false },
   chunks: [],
   recordStarted: 0,
   recordTimer: null,
@@ -274,22 +281,154 @@ async function createDemo() {
 
 function setModal(id, visible) { $(id).hidden = !visible; }
 
+function updateAudioSourceUI() {
+  for (const source of ["mic", "device"]) {
+    const enabled = state.audioSources[source];
+    const button = $(`[data-action="toggle-audio-source"][data-source="${source}"]`);
+    if (button) {
+      button.classList.toggle("active", enabled);
+      button.setAttribute("aria-checked", String(enabled));
+    }
+    $(`#${source}-source-status`).textContent = enabled ? "On" : "Off";
+  }
+  if (!state.recording) {
+    const sources = [
+      state.audioSources.mic ? "Microphone on" : "Microphone off",
+      state.audioSources.device ? "Device audio on" : "Device audio off",
+    ];
+    $("#record-subtitle").textContent = sources.join(" · ");
+  }
+}
+
+function setStreamAudioEnabled(stream, enabled) {
+  stream?.getAudioTracks().forEach((track) => { track.enabled = enabled; });
+}
+
+function connectAudioStream(source, stream) {
+  const track = stream?.getAudioTracks()[0];
+  if (!track || !state.audioContext || !state.mixBus) return;
+  state.sourceNodes[source]?.disconnect();
+  const node = state.audioContext.createMediaStreamSource(new MediaStream([track]));
+  node.connect(state.mixBus);
+  state.sourceNodes[source] = node;
+}
+
+async function acquireMicrophone() {
+  if (!state.micStream?.getAudioTracks().some((track) => track.readyState === "live")) {
+    state.micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true },
+      video: false,
+    });
+    if (state.audioContext) connectAudioStream("mic", state.micStream);
+  }
+  setStreamAudioEnabled(state.micStream, state.audioSources.mic);
+}
+
+async function acquireDeviceAudio() {
+  if (!navigator.mediaDevices.getDisplayMedia) {
+    throw new Error("Device audio capture is not supported by this browser");
+  }
+  if (!state.deviceStream?.getAudioTracks().some((track) => track.readyState === "live")) {
+    const stream = await navigator.mediaDevices.getDisplayMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      video: true,
+      preferCurrentTab: false,
+      selfBrowserSurface: "exclude",
+      systemAudio: "include",
+    });
+    if (!stream.getAudioTracks().length) {
+      stream.getTracks().forEach((track) => track.stop());
+      throw new Error("The selected source did not share audio. Enable “Share audio” and try again.");
+    }
+    state.deviceStream = stream;
+    const audioTrack = stream.getAudioTracks()[0];
+    audioTrack.addEventListener("ended", () => {
+      if (state.deviceStream !== stream) return;
+      stream.getTracks().forEach((track) => { if (track.readyState === "live") track.stop(); });
+      state.audioSources.device = false;
+      state.deviceStream = null;
+      updateAudioSourceUI();
+      if (state.recording) toast("Device audio sharing ended");
+    }, { once: true });
+    if (state.audioContext) connectAudioStream("device", stream);
+  }
+  setStreamAudioEnabled(state.deviceStream, state.audioSources.device);
+}
+
+async function setAudioSource(source, enabled) {
+  if (!["mic", "device"].includes(source)) return;
+  const previous = state.audioSources[source];
+  state.audioSources[source] = enabled;
+  updateAudioSourceUI();
+  if (!state.recording) return;
+  try {
+    if (source === "mic") {
+      if (enabled) await acquireMicrophone();
+      setStreamAudioEnabled(state.micStream, enabled);
+    } else {
+      if (enabled) await acquireDeviceAudio();
+      setStreamAudioEnabled(state.deviceStream, enabled);
+    }
+  } catch (error) {
+    state.audioSources[source] = previous;
+    updateAudioSourceUI();
+    const denied = error.name === "NotAllowedError" ? `${source === "mic" ? "Microphone" : "Device audio"} access was not allowed` : error.message;
+    toast(denied, "error");
+  }
+}
+
+async function cleanupRecordingAudio() {
+  for (const node of Object.values(state.sourceNodes)) {
+    try { node.disconnect(); } catch {}
+  }
+  state.sourceNodes = {};
+  for (const stream of [state.micStream, state.deviceStream, state.stream]) {
+    stream?.getTracks().forEach((track) => track.stop());
+  }
+  state.micStream = null;
+  state.deviceStream = null;
+  state.stream = null;
+  state.mixDestination = null;
+  state.mixBus = null;
+  if (state.audioContext && state.audioContext.state !== "closed") await state.audioContext.close();
+  state.audioContext = null;
+}
+
 async function beginRecording() {
   if (state.recording) {
-    state.recorder.stop();
+    if (state.recorder?.state !== "inactive") state.recorder.stop();
+    return;
+  }
+  if (!state.audioSources.mic && !state.audioSources.device) {
+    toast("Turn on the microphone or device audio before recording", "error");
     return;
   }
   try {
-    state.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass || !window.MediaRecorder) throw new Error("Audio recording is not supported by this browser");
+    state.audioContext = new AudioContextClass();
+    state.mixDestination = state.audioContext.createMediaStreamDestination();
+    state.mixBus = state.audioContext.createDynamicsCompressor();
+    state.mixBus.connect(state.mixDestination);
+    // Screen capture must be requested while the Record click still has transient
+    // user activation, so acquire it before awaiting microphone permission.
+    if (state.audioSources.device) await acquireDeviceAudio();
+    if (state.audioSources.mic) await acquireMicrophone();
+    await state.audioContext.resume();
+    state.stream = state.mixDestination.stream;
     const preferred = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find((type) => window.MediaRecorder?.isTypeSupported(type));
     state.recorder = new MediaRecorder(state.stream, preferred ? { mimeType: preferred } : undefined);
     state.chunks = [];
     state.recorder.ondataavailable = (event) => { if (event.data.size) state.chunks.push(event.data); };
     state.recorder.onstop = async () => {
       clearInterval(state.recordTimer);
-      state.stream.getTracks().forEach((track) => track.stop());
       const blob = new Blob(state.chunks, { type: state.recorder.mimeType || "audio/webm" });
       state.recording = false;
+      await cleanupRecordingAudio();
+      state.recorder = null;
+      $("[data-action='toggle-record']").classList.remove("recording");
+      $("#record-label").textContent = "Record now";
+      updateAudioSourceUI();
       setModal("#capture-modal", false);
       await uploadRecording(blob, `Meeting-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-")}.${blob.type.includes("mp4") ? "m4a" : "webm"}`);
     };
@@ -301,7 +440,12 @@ async function beginRecording() {
     state.recordTimer = setInterval(() => {
       $("#record-subtitle").textContent = `Recording · ${formatTimestamp((Date.now() - state.recordStarted) / 1000)}`;
     }, 500);
-  } catch (error) { toast(error.name === "NotAllowedError" ? "Microphone access was not allowed" : error.message, "error"); }
+  } catch (error) {
+    await cleanupRecordingAudio();
+    const deniedSource = state.audioSources.device ? "Audio capture" : "Microphone";
+    toast(error.name === "NotAllowedError" ? `${deniedSource} access was not allowed` : error.message, "error");
+    updateAudioSourceUI();
+  }
 }
 
 async function uploadRecording(blob, filename) {
@@ -445,6 +589,7 @@ document.addEventListener("click", async (event) => {
   if (action === "close-capture" && !state.recording) setModal("#capture-modal", false);
   if (action === "choose-file") $("#file-input").click();
   if (action === "toggle-record") beginRecording();
+  if (action === "toggle-audio-source") setAudioSource(trigger.dataset.source, !state.audioSources[trigger.dataset.source]);
   if (action === "create-demo") createDemo();
   if (action === "open-meeting") openMeeting(trigger.dataset.id);
   if (action === "refresh") refreshMeetings().then(() => toast("Meetings refreshed"));

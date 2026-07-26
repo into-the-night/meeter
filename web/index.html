@@ -62,11 +62,24 @@
         <button class="modal-close" data-action="close-capture" aria-label="Close">×</button>
         <div class="capture-icon"><span>✦</span></div>
         <h2 id="capture-title">Start a new meeting</h2>
-        <p>Record a conversation or bring in an existing file. Processing happens on this laptop.</p>
+        <p>Choose what to capture. You can switch either audio source on or off while recording.</p>
+        <div class="audio-source-controls" aria-label="Recording audio sources">
+          <button class="audio-source-toggle active" type="button" role="switch" aria-checked="true" data-action="toggle-audio-source" data-source="mic">
+            <span class="source-icon" aria-hidden="true">●</span>
+            <span><strong>Microphone</strong><small id="mic-source-status">On</small></span>
+            <span class="toggle-track" aria-hidden="true"><i></i></span>
+          </button>
+          <button class="audio-source-toggle" type="button" role="switch" aria-checked="false" data-action="toggle-audio-source" data-source="device">
+            <span class="source-icon device-icon" aria-hidden="true">▣</span>
+            <span><strong>Device audio</strong><small id="device-source-status">Off</small></span>
+            <span class="toggle-track" aria-hidden="true"><i></i></span>
+          </button>
+        </div>
+        <p class="device-audio-note">Device audio opens the browser’s share picker. Select a tab or screen and enable its audio.</p>
         <div class="capture-options">
           <button class="capture-option" data-action="toggle-record">
             <span class="option-icon record-icon">●</span>
-            <span><strong id="record-label">Record now</strong><small id="record-subtitle">Use this laptop's microphone</small></span>
+            <span><strong id="record-label">Record now</strong><small id="record-subtitle">Microphone on · Device audio off</small></span>
             <span class="arrow">→</span>
           </button>
           <button class="capture-option" data-action="choose-file">

@@ -6,13 +6,15 @@ It ships with a polished zero-dependency demo mode. For real audio processing, p
 
 ## What it does
 
-- Records from the browser or imports common audio/video files.
+- Records microphone and shared device/tab audio from the browser, with independent live source toggles, or imports common audio/video files.
 - Transcribes with a local Whisper model through `faster-whisper`.
 - Handles Hindi–English code-switching, including Devanagari and Romanized Hindi, while preserving English names and technical terms.
 - Diarizes with local sherpa-onnx models, recognizes enrolled voices, and labels every unmatched voice as a stable unknown speaker.
 - Produces decisions, risks, discussion notes, and actionable tasks using a local GGUF model through `llama-cpp-python` (with a deterministic offline fallback).
 - Copies individual actions, downloads calendar events, and prepares an Asana-safe clipboard payload without silently sending meeting data off-device.
 - Stores data locally and binds only to the loopback interface.
+
+Device audio availability depends on the browser and operating system. When it is enabled, choose a browser tab or screen in the share picker and turn on its **Share audio** option. Tab audio is the most consistently supported choice.
 
 ## Installed quick start
 
