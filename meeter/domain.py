@@ -47,7 +47,7 @@ class Meeting:
     source_name: str = "Recording"
     language: str = "en"
     model_note: str = "Processed locally"
+    audio: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-

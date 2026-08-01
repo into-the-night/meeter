@@ -148,6 +148,14 @@
         <p class="settings-intro">Meeter only loads model files your IT team has placed on this laptop. It never downloads models itself.</p>
         <div id="model-status" class="model-status"></div>
         <div class="settings-divider"></div>
+        <div class="settings-toggle-row">
+          <span><strong>Keep meeting audio</strong><small id="audio-retention-note">Store original recordings on this device for transcript playback.</small></span>
+          <label class="settings-switch">
+            <input id="audio-retention-toggle" type="checkbox" aria-label="Keep meeting audio" aria-describedby="audio-retention-note">
+            <span aria-hidden="true"><i></i></span>
+          </label>
+        </div>
+        <div class="settings-divider"></div>
         <h3>Known voices</h3>
         <p class="settings-copy">Enroll a clean 20–60 second voice sample to recognize a colleague in future meetings. Unmatched voices remain clearly labeled as unknown.</p>
         <div id="speaker-library" class="speaker-library"></div>

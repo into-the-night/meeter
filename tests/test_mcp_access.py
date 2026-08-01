@@ -59,6 +59,7 @@ class McpAccessTests(unittest.TestCase):
     def test_full_mode_returns_text_transcript_but_no_audio_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             meeting = demo_meeting().to_dict()
+            meeting["audio"] = {"mime_type": "audio/webm", "size_bytes": 1234}
             LocalStore(Path(directory)).save_meeting(meeting)
             service = self.service(directory, PrivacyLevel.FULL)
 
@@ -66,6 +67,7 @@ class McpAccessTests(unittest.TestCase):
 
             self.assertEqual(len(result["transcript"]), len(meeting["transcript"]))
             self.assertNotIn("source_name", result)
+            self.assertNotIn("audio", result)
             self.assertNotIn("confidence", result["transcript"][0])
 
     def test_allowlist_hides_other_meetings(self):

@@ -111,7 +111,7 @@ class MeetingPipeline:
             model_note=model_note,
         )
         progress("Saving on this device", 94)
-        return self.store.save_meeting(meeting.to_dict())
+        return meeting.to_dict()
 
     def enroll(self, audio_path: Path, name: str) -> dict[str, Any]:
         embedding = self.embedder.embed_file(audio_path)
@@ -122,4 +122,3 @@ class MeetingPipeline:
         profiles.append(profile)
         self.store.save_speakers(profiles)
         return {"id": profile_id, "name": name.strip()}
-

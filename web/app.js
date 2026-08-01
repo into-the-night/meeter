@@ -4,6 +4,7 @@ const state = {
   allActions: [],
   tab: "overview",
   health: null,
+  audioSettings: null,
   speakers: [],
   recording: false,
   recorder: null,
@@ -230,6 +231,8 @@ function participantAvatars(participants = []) {
 function renderMeeting() {
   const meeting = state.current;
   if (!meeting) return showWelcome();
+  const previousAudio = $("#meeting-audio");
+  if (previousAudio) previousAudio.pause();
   const unknownCount = (meeting.participants || []).filter((person) => person.known === false).length;
   $("#app").innerHTML = `
     <section class="meeting-page">
@@ -258,6 +261,7 @@ function renderMeeting() {
       </nav>
       <div class="tab-panel">${renderTab()}</div>
     </section>`;
+  if (state.tab === "transcript") setupTranscriptPlayback();
 }
 
 function renderTab() {
@@ -319,7 +323,15 @@ function renderActions(actions) {
 
 function renderTranscript() {
   const participants = state.current.participants || [];
+  const hasAudio = Boolean(state.current.audio);
   return `
+    <div class="transcript-player ${hasAudio ? "" : "unavailable"}">
+      ${hasAudio ? `
+        <div class="transcript-player-heading"><strong>Meeting audio</strong><span>Click any timestamp to jump to that moment.</span></div>
+        <audio id="meeting-audio" controls preload="metadata" src="/api/meetings/${encodeURIComponent(state.current.id)}/audio"></audio>
+        <p class="audio-playback-error" id="audio-playback-error" role="status" hidden>Audio could not be played in this browser.</p>`
+        : `<strong>Audio unavailable</strong><span>This meeting was saved without its original recording.</span>`}
+    </div>
     <div class="transcript-toolbar">
       <input class="transcript-search" id="transcript-search" type="search" placeholder="Search what was said…" autocomplete="off">
       <select class="speaker-filter" id="speaker-filter" aria-label="Filter by speaker">
@@ -330,11 +342,46 @@ function renderTranscript() {
     <article class="card transcript-card">
       ${(state.current.transcript || []).map((turn) => `
         <div class="transcript-turn" data-speaker="${escapeHtml(turn.speaker)}" data-text="${escapeHtml(turn.text.toLowerCase())}">
-          <span class="timestamp">${formatTimestamp(turn.start)}</span>
+          <button class="timestamp" data-action="seek-transcript" data-start="${Number(turn.start) || 0}" aria-label="Play from ${formatTimestamp(turn.start)}" ${hasAudio ? "" : "disabled"}>${formatTimestamp(turn.start)}</button>
           <span class="speaker-name ${turn.speaker.toLowerCase().includes("unknown") ? "unknown" : ""}"><i class="speaker-color"></i>${escapeHtml(turn.speaker)}</span>
           <p class="transcript-text">${escapeHtml(turn.text)}</p>
         </div>`).join("") || `<div class="empty-state">No transcript available.</div>`}
     </article>`;
+}
+
+function setupTranscriptPlayback() {
+  const audio = $("#meeting-audio");
+  if (!audio) return;
+  const rows = $$(".transcript-turn");
+  const updateActiveTurn = () => {
+    const time = audio.currentTime;
+    rows.forEach((row, index) => {
+      const turn = state.current?.transcript?.[index];
+      const active = Boolean(turn && time >= Number(turn.start) && time < Number(turn.end));
+      row.classList.toggle("active-audio", active);
+      if (active) row.setAttribute("aria-current", "true");
+      else row.removeAttribute("aria-current");
+    });
+  };
+  audio.addEventListener("timeupdate", updateActiveTurn);
+  audio.addEventListener("seeked", updateActiveTurn);
+  audio.addEventListener("ended", updateActiveTurn);
+  audio.addEventListener("error", () => {
+    const message = $("#audio-playback-error");
+    if (message) message.hidden = false;
+  });
+}
+
+async function seekTranscript(start) {
+  const audio = $("#meeting-audio");
+  if (!audio) return;
+  try {
+    audio.currentTime = Math.max(0, Number(start) || 0);
+    await audio.play();
+  } catch {
+    const message = $("#audio-playback-error");
+    if (message) message.hidden = false;
+  }
 }
 
 function renderDetails() {
@@ -849,13 +896,38 @@ function filterTranscript() {
 async function showSettings() {
   setModal("#settings-modal", true);
   try {
-    const [health, speakers] = await Promise.all([api("/api/health"), api("/api/speakers")]);
+    const [health, speakers, audioSettings] = await Promise.all([api("/api/health"), api("/api/speakers"), api("/api/settings/audio")]);
     state.health = health;
     state.speakers = speakers.speakers || [];
+    state.audioSettings = audioSettings;
     const components = health.readiness?.components || {};
     $("#model-status").innerHTML = Object.entries(components).map(([name, ready]) => `<div class="model-item ${ready ? "ready" : ""}"><span class="model-light"></span><span><strong>${escapeHtml(name)}</strong><small>${ready ? "Local path configured" : name === "summarization" ? "Using offline fallback" : "Setup required"}</small></span></div>`).join("");
     $("#speaker-library").innerHTML = state.speakers.length ? state.speakers.map((speaker) => `<span class="speaker-chip"><span>${escapeHtml(initials(speaker.name))}</span>${escapeHtml(speaker.name)}</span>`).join("") : `<span class="settings-copy">No voices enrolled yet.</span>`;
+    const retentionToggle = $("#audio-retention-toggle");
+    retentionToggle.checked = Boolean(audioSettings.retain_recordings);
+    retentionToggle.disabled = Boolean(audioSettings.managed);
+    $("#audio-retention-note").textContent = audioSettings.error
+      ? audioSettings.error
+      : audioSettings.managed
+      ? "Managed by MEETER_KEEP_AUDIO. Change the environment setting and restart Meeter to update it."
+      : "Store original recordings on this device for transcript playback.";
   } catch (error) { toast(error.message, "error"); }
+}
+
+async function updateAudioRetention(enabled) {
+  const toggle = $("#audio-retention-toggle");
+  try {
+    state.audioSettings = await api("/api/settings/audio", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ retain_recordings: enabled }),
+    });
+    toggle.checked = Boolean(state.audioSettings.retain_recordings);
+    toast(enabled ? "Meeting audio will be kept locally" : "New meeting audio will not be retained");
+  } catch (error) {
+    toggle.checked = Boolean(state.audioSettings?.retain_recordings);
+    toast(error.message, "error");
+  }
 }
 
 async function enrollVoice(file) {
@@ -910,6 +982,7 @@ document.addEventListener("click", async (event) => {
   if (action === "settings") { hideCaptureWorkspace(); showSettings(); }
   if (action === "close-settings") setModal("#settings-modal", false);
   if (action === "tab") { state.tab = trigger.dataset.tab; renderMeeting(); }
+  if (action === "seek-transcript") seekTranscript(trigger.dataset.start);
   if (action === "copy-summary") copyText(`${state.current.title}\n\n${state.current.summary}\n\nDecisions:\n${(state.current.decisions || []).map((item) => `• ${item}`).join("\n")}`, trigger, "Copied");
   if (action === "export-markdown") exportMarkdown(trigger);
   if (action === "copy-action") { const item = findAction(trigger.dataset.id); if (item) copyText(actionText(item), trigger, "Copied"); }
@@ -955,6 +1028,7 @@ document.addEventListener("input", (event) => {
 
 document.addEventListener("change", (event) => {
   if (event.target.matches("#speaker-filter")) filterTranscript();
+  if (event.target.matches("#audio-retention-toggle")) updateAudioRetention(event.target.checked);
   if (event.target.matches("#library-sort")) renderLibraryCards();
   if (event.target.matches("#microphone-select")) {
     changeMicrophone(event.target.value);

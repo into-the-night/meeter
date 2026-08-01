@@ -14,6 +14,8 @@ It ships with a polished zero-dependency demo mode. For real audio processing, p
 - Copies individual actions or complete action lists and downloads calendar events without sending meeting data off-device.
 - Stores data locally and binds only to the loopback interface.
 
+Original meeting audio is retained locally by default so transcript timestamps can play it back. Turn this off under **Settings → Keep meeting audio** for future meetings. Administrators can manage the setting with `MEETER_KEEP_AUDIO=1` or `MEETER_KEEP_AUDIO=0`; when present, the environment value disables the in-app toggle.
+
 Device audio availability depends on the browser and operating system. When it is enabled, choose a browser tab or screen in the share picker and turn on its **Share audio** option. Tab audio is the most consistently supported choice.
 
 ## Installed quick start
@@ -124,7 +126,7 @@ Data defaults to the operating system's application-data directory. Override it 
 export MEETER_DATA_DIR="/path/controlled/by/IT"
 ```
 
-Imported audio is deleted after processing by default; only the transcript and generated notes remain. Set `MEETER_KEEP_AUDIO=1` only if your retention policy explicitly permits keeping source recordings.
+Original meeting audio is retained after successful processing by default to support local playback. Disable **Settings → Keep meeting audio** before recording or importing when the source should be deleted after processing. Managed deployments can enforce either behavior with `MEETER_KEEP_AUDIO=1` or `MEETER_KEEP_AUDIO=0`.
 
 For stronger protection, place that directory on an encrypted, access-controlled volume. OS full-disk encryption and managed browser microphone policies remain the responsibility of device management.
 

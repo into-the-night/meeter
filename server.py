@@ -22,6 +22,23 @@ from meeter.storage import LocalStore
 ROOT = Path(__file__).resolve().parent
 WEB_ROOT = ROOT / "web"
 MAX_UPLOAD_BYTES = 750 * 1024 * 1024
+STREAM_CHUNK_BYTES = 64 * 1024
+
+
+def normalize_media_type(value: str | None, filename: str) -> str:
+    supplied = (value or "").split(";", 1)[0].strip().lower()
+    if supplied.startswith("audio/") or supplied in {"video/mp4", "video/webm"}:
+        return supplied
+    guessed = (mimetypes.guess_type(filename)[0] or "").lower()
+    if guessed.startswith("audio/") or guessed in {"video/mp4", "video/webm"}:
+        return guessed
+    return "application/octet-stream"
+
+
+def parse_managed_bool(name: str) -> bool | None:
+    if name not in os.environ:
+        return None
+    return os.environ[name].strip().lower() not in {"", "0", "false", "no", "off"}
 
 
 class JobManager:
@@ -30,31 +47,45 @@ class JobManager:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
 
-    def submit(self, audio_path: Path, source_name: str) -> dict[str, Any]:
+    def submit(self, audio_path: Path, source_name: str, mime_type: str, retain_audio: bool) -> dict[str, Any]:
         job_id = f"job_{uuid4().hex[:12]}"
         with self._lock:
             self._jobs[job_id] = {"id": job_id, "state": "queued", "step": "Preparing", "progress": 2}
-        threading.Thread(target=self._run, args=(job_id, audio_path, source_name), daemon=True).start()
+        threading.Thread(
+            target=self._run,
+            args=(job_id, audio_path, source_name, mime_type, retain_audio),
+            daemon=True,
+        ).start()
         return self.get(job_id) or {}
 
-    def _run(self, job_id: str, audio_path: Path, source_name: str) -> None:
+    def _run(self, job_id: str, audio_path: Path, source_name: str, mime_type: str, retain_audio: bool) -> None:
         def update(step: str, progress: int) -> None:
             with self._lock:
                 self._jobs[job_id].update({"state": "processing", "step": step, "progress": progress})
 
+        promoted_audio = False
+        meeting_id: str | None = None
         try:
             meeting = self.pipeline.process(audio_path, source_name, update)
+            meeting_id = str(meeting["id"])
+            if retain_audio:
+                meeting["audio"] = self.pipeline.store.save_meeting_audio(meeting_id, audio_path, mime_type)
+                promoted_audio = True
+            else:
+                meeting["audio"] = None
+            self.pipeline.store.save_meeting(meeting)
             with self._lock:
-                self._jobs[job_id].update({"state": "complete", "step": "Ready", "progress": 100, "meeting_id": meeting["id"]})
+                self._jobs[job_id].update({"state": "complete", "step": "Ready", "progress": 100, "meeting_id": meeting_id})
         except ModelNotReady as exc:
             with self._lock:
                 self._jobs[job_id].update({"state": "error", "code": "MODEL_NOT_READY", "error": str(exc), "step": "Setup needed"})
         except Exception as exc:  # keeps details local and avoids killing the HTTP worker
+            if promoted_audio and meeting_id:
+                self.pipeline.store.delete_meeting_audio(meeting_id)
             with self._lock:
                 self._jobs[job_id].update({"state": "error", "code": "PROCESSING_FAILED", "error": str(exc), "step": "Processing failed"})
         finally:
-            if os.environ.get("MEETER_KEEP_AUDIO", "0") != "1":
-                audio_path.unlink(missing_ok=True)
+            audio_path.unlink(missing_ok=True)
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -70,6 +101,21 @@ class MeeterServer(ThreadingHTTPServer):
         self.pipeline = MeetingPipeline(store)
         self.jobs = JobManager(self.pipeline)
         super().__init__(address, RequestHandler)
+
+    def audio_settings(self) -> dict[str, Any]:
+        settings, settings_error = self.store.load_settings_state()
+        saved = settings.get("audio", {})
+        configured_value = saved.get("retain_recordings", False) if isinstance(saved, dict) else False
+        configured = configured_value if isinstance(configured_value, bool) else False
+        if not isinstance(configured_value, bool) and settings_error is None:
+            settings_error = "Audio retention setting is invalid and has been disabled."
+        managed = parse_managed_bool("MEETER_KEEP_AUDIO")
+        return {
+            "retain_recordings": configured if managed is None else managed,
+            "managed": managed is not None,
+            "managed_by": "MEETER_KEEP_AUDIO" if managed is not None else None,
+            "error": settings_error,
+        }
 
 
 class RequestHandler(BaseHTTPRequestHandler):
@@ -88,10 +134,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         self.send_header("Permissions-Policy", "camera=(), display-capture=(self), geolocation=(), microphone=(self)")
         self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
 
-    def _begin(self, status: int, content_type: str, length: int) -> None:
+    def _begin(self, status: int, content_type: str, length: int, headers: dict[str, str] | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(length))
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self._secure_headers()
         self.end_headers()
 
@@ -129,8 +177,12 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path == "/api/meetings":
             self._json({"meetings": self.server.store.list_meetings()})
             return
-        if path.startswith("/api/meetings/"):
-            meeting = self.server.store.get_meeting(path.rsplit("/", 1)[-1])
+        parts = path.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "meetings"] and parts[3] == "audio":
+            self._serve_meeting_audio(parts[2])
+            return
+        if len(parts) == 3 and parts[:2] == ["api", "meetings"]:
+            meeting = self.server.store.get_meeting(parts[2])
             self._json(meeting if meeting else {"error": "Meeting not found"}, 200 if meeting else 404)
             return
         if path.startswith("/api/jobs/"):
@@ -141,12 +193,19 @@ class RequestHandler(BaseHTTPRequestHandler):
             profiles = [{"id": item.get("id"), "name": item.get("name")} for item in self.server.store.load_speakers()]
             self._json({"speakers": profiles})
             return
+        if path == "/api/settings/audio":
+            self._json(self.server.audio_settings())
+            return
         self._serve_static(path)
 
     def do_HEAD(self) -> None:
         if not self._guard():
             return
         path = urllib.parse.urlparse(self.path).path
+        parts = path.strip("/").split("/")
+        if len(parts) == 4 and parts[:2] == ["api", "meetings"] and parts[3] == "audio":
+            self._serve_meeting_audio(parts[2], head_only=True)
+            return
         if path.startswith("/api/"):
             self._json({"error": "HEAD is not available for API resources"}, 405)
             return
@@ -167,6 +226,93 @@ class RequestHandler(BaseHTTPRequestHandler):
         self._begin(200, content_type, len(body))
         if not head_only:
             self.wfile.write(body)
+
+    @staticmethod
+    def _parse_byte_range(value: str, size: int) -> tuple[int, int] | None:
+        if not value.startswith("bytes=") or "," in value or size <= 0:
+            return None
+        spec = value[6:].strip()
+        if "-" not in spec:
+            return None
+        start_text, end_text = spec.split("-", 1)
+        try:
+            if not start_text:
+                suffix = int(end_text)
+                if suffix <= 0:
+                    return None
+                return max(0, size - suffix), size - 1
+            start = int(start_text)
+            if start < 0 or start >= size:
+                return None
+            end = size - 1 if not end_text else int(end_text)
+            if end < start:
+                return None
+            return start, min(end, size - 1)
+        except ValueError:
+            return None
+
+    def _serve_meeting_audio(self, meeting_id: str, head_only: bool = False) -> None:
+        meeting = self.server.store.get_meeting(meeting_id)
+        metadata = meeting.get("audio") if isinstance(meeting, dict) else None
+        target = self.server.store.get_meeting_audio(meeting_id) if isinstance(metadata, dict) else None
+        if target is None:
+            if head_only:
+                self._begin(404, "application/json; charset=utf-8", 0, {"Cache-Control": "private, no-store"})
+            else:
+                body = json.dumps({"error": "Meeting audio not found"}).encode("utf-8")
+                self._begin(404, "application/json; charset=utf-8", len(body), {"Cache-Control": "private, no-store"})
+                self.wfile.write(body)
+            return
+        size = target.stat().st_size
+        mime_type = str(metadata.get("mime_type") or "application/octet-stream")
+        common_headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, no-store"}
+        range_value = self.headers.get("Range")
+        start, end, status = 0, max(0, size - 1), 200
+        if range_value:
+            selected = self._parse_byte_range(range_value, size)
+            if selected is None:
+                self._begin(416, "application/octet-stream", 0, {**common_headers, "Content-Range": f"bytes */{size}"})
+                return
+            start, end = selected
+            status = 206
+            common_headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        length = 0 if size == 0 else end - start + 1
+        self._begin(status, mime_type, length, common_headers)
+        if head_only or length == 0:
+            return
+        try:
+            with target.open("rb") as handle:
+                handle.seek(start)
+                remaining = length
+                while remaining:
+                    chunk = handle.read(min(STREAM_CHUNK_BYTES, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
+    def do_PUT(self) -> None:
+        if not self._guard():
+            return
+        path = urllib.parse.urlparse(self.path).path
+        try:
+            if path == "/api/settings/audio":
+                payload = self._read_json()
+                if not isinstance(payload.get("retain_recordings"), bool):
+                    raise ValueError("retain_recordings must be a boolean")
+                if parse_managed_bool("MEETER_KEEP_AUDIO") is not None:
+                    self._json({"error": "Audio retention is managed by MEETER_KEEP_AUDIO"}, 409)
+                    return
+                self.server.store.update_settings_section(
+                    "audio", {"retain_recordings": payload["retain_recordings"]}
+                )
+                self._json(self.server.audio_settings())
+                return
+            self._json({"error": "Not found"}, 404)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._json({"error": str(exc)}, 400)
 
     def do_POST(self) -> None:
         if not self._guard():
@@ -209,7 +355,9 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _process_upload(self) -> None:
         filename, body = self._read_upload()
         audio_path = self.server.store.save_upload(filename, body)
-        job = self.server.jobs.submit(audio_path, filename)
+        mime_type = normalize_media_type(self.headers.get("Content-Type"), filename)
+        retain_audio = self.server.audio_settings()["retain_recordings"]
+        job = self.server.jobs.submit(audio_path, filename, mime_type, retain_audio)
         self._json(job, 202)
 
     def _enroll_speaker(self, parsed: urllib.parse.ParseResult) -> None:

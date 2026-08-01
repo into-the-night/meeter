@@ -4,9 +4,15 @@ import json
 import os
 import platform
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 from threading import RLock
 from typing import Any
+
+
+DEFAULT_SETTINGS: dict[str, Any] = {
+    "audio": {"retain_recordings": True},
+}
 
 
 def default_data_dir() -> Path:
@@ -39,16 +45,20 @@ class LocalStore:
             temp_path = Path(handle.name)
         os.replace(temp_path, path)
 
+    @staticmethod
+    def _valid_meeting_id(meeting_id: str) -> bool:
+        return meeting_id.startswith("meeting_") and meeting_id.replace("_", "").isalnum()
+
     def save_meeting(self, meeting: dict[str, Any]) -> dict[str, Any]:
         meeting_id = str(meeting["id"])
-        if not meeting_id.startswith("meeting_") or not meeting_id.replace("_", "").isalnum():
+        if not self._valid_meeting_id(meeting_id):
             raise ValueError("Invalid meeting id")
         with self._lock:
             self._atomic_json(self.meetings_dir / f"{meeting_id}.json", meeting)
         return meeting
 
     def get_meeting(self, meeting_id: str) -> dict[str, Any] | None:
-        if not meeting_id.startswith("meeting_") or not meeting_id.replace("_", "").isalnum():
+        if not self._valid_meeting_id(meeting_id):
             return None
         path = self.meetings_dir / f"{meeting_id}.json"
         if not path.exists():
@@ -83,6 +93,75 @@ class LocalStore:
         target.write_bytes(body)
         return target
 
+    def meeting_audio_path(self, meeting_id: str) -> Path | None:
+        if not self._valid_meeting_id(meeting_id):
+            return None
+        return self.audio_dir / f"{meeting_id}.source"
+
+    def save_meeting_audio(self, meeting_id: str, source: Path, mime_type: str) -> dict[str, Any]:
+        target = self.meeting_audio_path(meeting_id)
+        if target is None:
+            raise ValueError("Invalid meeting id")
+        with self._lock:
+            os.replace(source, target)
+            size = target.stat().st_size
+        return {"mime_type": mime_type, "size_bytes": size}
+
+    def get_meeting_audio(self, meeting_id: str) -> Path | None:
+        target = self.meeting_audio_path(meeting_id)
+        return target if target is not None and target.is_file() else None
+
+    def delete_meeting_audio(self, meeting_id: str) -> None:
+        target = self.meeting_audio_path(meeting_id)
+        if target is not None:
+            with self._lock:
+                target.unlink(missing_ok=True)
+
+    @property
+    def settings_path(self) -> Path:
+        return self.root / "settings.json"
+
+    def load_settings_state(self) -> tuple[dict[str, Any], str | None]:
+        settings = deepcopy(DEFAULT_SETTINGS)
+        if not self.settings_path.is_file():
+            return settings, None
+        try:
+            with self._lock, self.settings_path.open(encoding="utf-8") as handle:
+                saved = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            settings["audio"]["retain_recordings"] = False
+            return settings, "Settings could not be read; audio retention is disabled until they are saved again."
+        if not isinstance(saved, dict):
+            settings["audio"]["retain_recordings"] = False
+            return settings, "Settings are invalid; audio retention is disabled until they are saved again."
+        for section, value in saved.items():
+            if isinstance(value, dict) and isinstance(settings.get(section), dict):
+                settings[section].update(value)
+            else:
+                settings[section] = value
+        return settings, None
+
+    def load_settings(self) -> dict[str, Any]:
+        settings, _ = self.load_settings_state()
+        return settings
+
+    def save_settings(self, settings: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(settings, dict):
+            raise ValueError("Settings must be a JSON object")
+        with self._lock:
+            self._atomic_json(self.settings_path, settings)
+        return settings
+
+    def update_settings_section(self, section: str, values: dict[str, Any]) -> dict[str, Any]:
+        if not section or not isinstance(values, dict):
+            raise ValueError("Invalid settings section")
+        with self._lock:
+            settings = self.load_settings()
+            current = settings.get(section)
+            settings[section] = {**(current if isinstance(current, dict) else {}), **values}
+            self._atomic_json(self.settings_path, settings)
+        return settings[section]
+
     @property
     def speakers_path(self) -> Path:
         return self.root / "speakers.json"
@@ -97,4 +176,3 @@ class LocalStore:
     def save_speakers(self, speakers: list[dict[str, Any]]) -> None:
         with self._lock:
             self._atomic_json(self.speakers_path, speakers)
-
