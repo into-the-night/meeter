@@ -128,6 +128,31 @@
       </div>
     </div>
 
+    <div class="modal-layer" id="rename-meeting-modal" hidden>
+      <form class="modal meeting-edit-modal" id="rename-meeting-form" role="dialog" aria-modal="true" aria-labelledby="rename-meeting-title">
+        <h2 id="rename-meeting-title">Rename meeting</h2>
+        <label for="meeting-title-input">Meeting name</label>
+        <input id="meeting-title-input" name="title" type="text" maxlength="120" required aria-describedby="meeting-title-error">
+        <p class="form-error" id="meeting-title-error" role="alert" hidden></p>
+        <div class="cancel-confirm-actions">
+          <button class="secondary-button" type="button" data-action="close-rename-meeting">Cancel</button>
+          <button class="primary-button" id="rename-meeting-submit" type="submit">Save name</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="modal-layer" id="delete-meeting-modal" hidden>
+      <div class="modal cancel-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-meeting-title" aria-describedby="delete-meeting-copy">
+        <span class="cancel-confirm-icon" aria-hidden="true">×</span>
+        <h2 id="delete-meeting-title">Delete meeting?</h2>
+        <p id="delete-meeting-copy"></p>
+        <div class="cancel-confirm-actions">
+          <button class="secondary-button" data-action="close-delete-meeting">Cancel</button>
+          <button class="discard-button" id="delete-meeting-submit" data-action="confirm-delete-meeting">Delete permanently</button>
+        </div>
+      </div>
+    </div>
+
     <div class="modal-layer" id="process-modal" hidden>
       <div class="modal process-modal" role="dialog" aria-modal="true" aria-labelledby="process-title">
         <div class="processing-orb"><span></span><i></i><b></b></div>

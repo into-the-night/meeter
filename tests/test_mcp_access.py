@@ -90,6 +90,24 @@ class McpAccessTests(unittest.TestCase):
             with self.assertRaises(LookupError):
                 service.get_meeting_insights(second["id"])
 
+    def test_meeting_rename_and_delete_are_immediately_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            meeting = demo_meeting().to_dict()
+            store = LocalStore(Path(directory))
+            store.save_meeting(meeting)
+            service = self.service(directory)
+
+            store.rename_meeting(meeting["id"], "Renamed planning")
+            self.assertEqual(
+                service.get_meeting_insights(meeting["id"])["meeting"]["title"],
+                "Renamed planning",
+            )
+
+            store.delete_meeting(meeting["id"])
+            self.assertEqual(service.list_meetings()["meetings"], [])
+            with self.assertRaises(LookupError):
+                service.get_meeting_insights(meeting["id"])
+
     def test_pii_is_redacted_from_insights_and_transcript(self):
         with tempfile.TemporaryDirectory() as directory:
             meeting = demo_meeting().to_dict()

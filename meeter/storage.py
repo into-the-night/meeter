@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import tempfile
+import unicodedata
 from copy import deepcopy
 from pathlib import Path
 from threading import RLock
@@ -13,6 +14,20 @@ from typing import Any
 DEFAULT_SETTINGS: dict[str, Any] = {
     "audio": {"retain_recordings": True},
 }
+
+
+def validate_meeting_title(value: Any) -> str:
+    """Return a normalized meeting title or raise a user-safe validation error."""
+    if not isinstance(value, str):
+        raise ValueError("Title must be a string")
+    title = value.strip()
+    if not title:
+        raise ValueError("Title must not be empty")
+    if len(title) > 120:
+        raise ValueError("Title must be 120 characters or fewer")
+    if any(unicodedata.category(character) == "Cc" for character in title):
+        raise ValueError("Title must not contain control characters")
+    return title
 
 
 def default_data_dir() -> Path:
@@ -84,6 +99,34 @@ class LocalStore:
                 except (OSError, json.JSONDecodeError, KeyError):
                     continue
         return sorted(records, key=lambda item: item.get("created_at") or "", reverse=True)
+
+    def rename_meeting(self, meeting_id: str, title: Any) -> dict[str, Any] | None:
+        normalized = validate_meeting_title(title)
+        if not self._valid_meeting_id(meeting_id):
+            return None
+        path = self.meetings_dir / f"{meeting_id}.json"
+        with self._lock:
+            if not path.is_file():
+                return None
+            with path.open(encoding="utf-8") as handle:
+                meeting = json.load(handle)
+            meeting["title"] = normalized
+            self._atomic_json(path, meeting)
+        return meeting
+
+    def delete_meeting(self, meeting_id: str) -> bool:
+        """Permanently delete one meeting, removing its owned audio first."""
+        if not self._valid_meeting_id(meeting_id):
+            return False
+        meeting_path = self.meetings_dir / f"{meeting_id}.json"
+        with self._lock:
+            if not meeting_path.is_file():
+                return False
+            audio_path = self.meeting_audio_path(meeting_id)
+            if audio_path is not None:
+                audio_path.unlink(missing_ok=True)
+            meeting_path.unlink()
+        return True
 
     def save_upload(self, filename: str, body: bytes) -> Path:
         safe_name = "".join(ch for ch in Path(filename).name if ch.isalnum() or ch in ".-_ ").strip()

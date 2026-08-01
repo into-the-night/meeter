@@ -264,7 +264,7 @@ function renderMeeting() {
       <header class="meeting-header">
         <div>
           <div class="meeting-kicker">Complete · processed locally</div>
-          <h1>${escapeHtml(meeting.title)}</h1>
+          <div class="meeting-title-row"><h1>${escapeHtml(meeting.title)}</h1><button class="title-edit-button" data-action="open-rename-meeting" aria-label="Rename ${escapeHtml(meeting.title)}">Edit name</button></div>
           <div class="meeting-meta">
             <span>▦ ${formatDate(meeting.created_at, "long")}</span>
             <span>◷ ${formatDuration(meeting.duration)}</span>
@@ -471,6 +471,10 @@ function renderDetails() {
           <button class="rename-button" data-action="rename-speaker" data-name="${escapeHtml(person.name)}">Rename</button>
         </div>`).join("")}
     </article>
+    <article class="card card-pad danger-zone">
+      <div><h2>Delete meeting</h2><p>Permanently remove this transcript, notes, snippets, and retained audio.</p></div>
+      <button class="discard-button" data-action="open-delete-meeting">Delete meeting</button>
+    </article>
   </div>`;
 }
 
@@ -502,6 +506,78 @@ async function createDemo() {
 function setModal(id, visible) {
   $(id).hidden = !visible;
   if (id === "#capture-modal") document.body.classList.toggle("capture-open", visible);
+}
+
+function openRenameMeeting() {
+  const input = $("#meeting-title-input");
+  $("#meeting-title-error").hidden = true;
+  input.value = state.current.title;
+  setModal("#rename-meeting-modal", true);
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+}
+
+function closeRenameMeeting() {
+  setModal("#rename-meeting-modal", false);
+  $("[data-action='open-rename-meeting']")?.focus();
+}
+
+function openDeleteMeeting() {
+  $("#delete-meeting-copy").textContent = `“${state.current.title}” and its transcript, notes, snippets, and audio will be permanently deleted.`;
+  setModal("#delete-meeting-modal", true);
+  requestAnimationFrame(() => $("#delete-meeting-submit").focus());
+}
+
+function closeDeleteMeeting() {
+  setModal("#delete-meeting-modal", false);
+  $("[data-action='open-delete-meeting']")?.focus();
+}
+
+async function renameMeeting() {
+  const input = $("#meeting-title-input");
+  const submit = $("#rename-meeting-submit");
+  const errorNode = $("#meeting-title-error");
+  submit.disabled = true;
+  submit.textContent = "Saving…";
+  errorNode.hidden = true;
+  try {
+    state.current = await api(`/api/meetings/${encodeURIComponent(state.current.id)}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: input.value }),
+    });
+    state.allActions = [];
+    await refreshMeetings();
+    setModal("#rename-meeting-modal", false);
+    renderMeeting();
+    toast("Meeting renamed");
+  } catch (error) {
+    errorNode.textContent = error.message;
+    errorNode.hidden = false;
+    input.focus();
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Save name";
+  }
+}
+
+async function deleteMeeting() {
+  const submit = $("#delete-meeting-submit");
+  const meetingId = state.current.id;
+  resetMeetingPlayback();
+  submit.disabled = true;
+  submit.textContent = "Deleting…";
+  try {
+    await api(`/api/meetings/${encodeURIComponent(meetingId)}`, { method: "DELETE" });
+    state.current = null;
+    state.allActions = [];
+    setModal("#delete-meeting-modal", false);
+    await refreshMeetings();
+    showLibrary();
+    toast("Meeting deleted");
+  } catch (error) {
+    toast(error.message, "error");
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Delete permanently";
+  }
 }
 
 function hideCaptureWorkspace() {
@@ -1048,6 +1124,11 @@ document.addEventListener("click", async (event) => {
   if (action === "show-actions") { showActions(); $("#sidebar").classList.remove("open"); }
   if (action === "settings") { hideCaptureWorkspace(); showSettings(); }
   if (action === "close-settings") setModal("#settings-modal", false);
+  if (action === "open-rename-meeting") openRenameMeeting();
+  if (action === "close-rename-meeting") closeRenameMeeting();
+  if (action === "open-delete-meeting") openDeleteMeeting();
+  if (action === "close-delete-meeting") closeDeleteMeeting();
+  if (action === "confirm-delete-meeting") deleteMeeting();
   if (action === "tab") { state.tab = trigger.dataset.tab; renderMeeting(); }
   if (action === "seek-transcript") seekTranscript(trigger.dataset.start);
   if (action === "play-voice-snippet") toggleVoiceSnippet(trigger, Number(trigger.dataset.start), Number(trigger.dataset.end));
@@ -1106,11 +1187,23 @@ document.addEventListener("change", (event) => {
 });
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); $("#global-search").focus(); }
+  if (event.key === "Enter" && event.target.matches("#meeting-title-input") && !$("#rename-meeting-modal").hidden) {
+    event.preventDefault();
+    renameMeeting();
+    return;
+  }
   if (event.key === "Escape") {
-    if (!$("#cancel-confirm-modal").hidden) setModal("#cancel-confirm-modal", false);
+    if (!$("#rename-meeting-modal").hidden) closeRenameMeeting();
+    else if (!$("#delete-meeting-modal").hidden) closeDeleteMeeting();
+    else if (!$("#cancel-confirm-modal").hidden) setModal("#cancel-confirm-modal", false);
     else if (!$("#capture-modal").hidden) closeCapture();
     setModal("#settings-modal", false);
   }
+});
+
+$("#rename-meeting-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  renameMeeting();
 });
 
 async function init() {

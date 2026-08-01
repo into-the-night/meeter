@@ -1096,6 +1096,20 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
   grid-template-columns: 1fr 1fr;
   gap: 9px;
 }
+.meeting-title-row { display: flex; align-items: center; gap: 10px; }
+.title-edit-button, .rename-button {
+  min-height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: #fff; color: var(--muted); font: inherit; font-size: 10px; font-weight: 700; cursor: pointer;
+}
+.meeting-edit-modal { width: min(430px, 100%); padding: 30px; }
+.meeting-edit-modal label { display: block; margin: 20px 0 7px; color: var(--muted); font-size: 11px; font-weight: 700; }
+.meeting-edit-modal input { box-sizing: border-box; width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; font: inherit; }
+.meeting-edit-modal .cancel-confirm-actions { margin-top: 22px; }
+.form-error { margin: 7px 0 0; color: #a94137; font-size: 10px; }
+.danger-zone { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-color: #efd2cc; }
+.danger-zone h2 { margin: 0 0 5px; color: #8e352d; font-size: 14px; }
+.danger-zone p { margin: 0; color: var(--muted); font-size: 10px; }
+.danger-zone .discard-button { flex: 0 0 auto; }
 .discard-button {
   min-height: 41px;
   padding: 0 16px;

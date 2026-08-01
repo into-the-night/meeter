@@ -144,6 +144,46 @@ class ServerTests(unittest.TestCase):
         self.assertIn("toggleVoiceSnippet", script)
         self.assertIn("meetingPlayback.snippetEnd", script)
 
+    def test_meeting_rename_delete_contract_and_mcp_propagation(self):
+        meeting = demo_meeting().to_dict()
+        self.server.store.save_meeting(meeting)
+
+        status, renamed = self.request_json(
+            f"/api/meetings/{meeting['id']}", '{"title":"  Renamed sync  "}', method="PATCH"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(renamed["title"], "Renamed sync")
+        self.assertEqual(self.server.store.get_meeting(meeting["id"])["title"], "Renamed sync")
+
+        status, result = self.request_json(f"/api/meetings/{meeting['id']}", method="DELETE")
+        self.assertEqual(status, 200)
+        self.assertEqual(result, {"ok": True, "meeting_id": meeting["id"]})
+        self.assertIsNone(self.server.store.get_meeting(meeting["id"]))
+        for method, data in [("DELETE", None), ("PATCH", '{"title":"Again"}')]:
+            request = urllib.request.Request(self.base + f"/api/meetings/{meeting['id']}", data=data.encode() if data else None, headers={"Content-Type": "application/json"}, method=method)
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=3)
+            self.assertEqual(raised.exception.code, 404)
+
+    def test_meeting_rename_validation_and_ui_contract(self):
+        meeting = demo_meeting().to_dict()
+        self.server.store.save_meeting(meeting)
+        for title in ["", "bad\nname", "x" * 121]:
+            request = urllib.request.Request(
+                self.base + f"/api/meetings/{meeting['id']}",
+                data=json.dumps({"title": title}).encode(),
+                headers={"Content-Type": "application/json"}, method="PATCH",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=3)
+            self.assertEqual(raised.exception.code, 400)
+        with urllib.request.urlopen(self.base + "/app.js", timeout=3) as response:
+            script = response.read().decode("utf-8")
+        self.assertIn('data-action="open-rename-meeting"', script)
+        self.assertIn('data-action="open-delete-meeting"', script)
+        self.assertIn('method: "PATCH"', script)
+        self.assertIn('method: "DELETE"', script)
+
     def test_speaker_rename_preserves_voice_snippet(self):
         meeting = demo_meeting().to_dict()
         participant = meeting["participants"][0]

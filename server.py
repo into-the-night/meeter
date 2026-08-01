@@ -314,6 +314,35 @@ class RequestHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, 400)
 
+    def do_PATCH(self) -> None:
+        if not self._guard():
+            return
+        path = urllib.parse.urlparse(self.path).path
+        parts = path.strip("/").split("/")
+        try:
+            if len(parts) == 3 and parts[:2] == ["api", "meetings"]:
+                payload = self._read_json()
+                meeting = self.server.store.rename_meeting(parts[2], payload.get("title"))
+                self._json(meeting if meeting else {"error": "Meeting not found"}, 200 if meeting else 404)
+                return
+            self._json({"error": "Not found"}, 404)
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._json({"error": str(exc)}, 400)
+
+    def do_DELETE(self) -> None:
+        if not self._guard():
+            return
+        path = urllib.parse.urlparse(self.path).path
+        parts = path.strip("/").split("/")
+        if len(parts) == 3 and parts[:2] == ["api", "meetings"]:
+            meeting_id = parts[2]
+            if self.server.store.delete_meeting(meeting_id):
+                self._json({"ok": True, "meeting_id": meeting_id})
+            else:
+                self._json({"error": "Meeting not found"}, 404)
+            return
+        self._json({"error": "Not found"}, 404)
+
     def do_POST(self) -> None:
         if not self._guard():
             return

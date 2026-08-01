@@ -36,6 +36,39 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(store.get_meeting_audio("meeting_audio123").read_bytes(), b"0123456789")
             self.assertIsNone(store.meeting_audio_path("meeting_../../escape"))
 
+    def test_rename_meeting_validates_title_and_preserves_fields(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory))
+            meeting = demo_meeting().to_dict()
+            store.save_meeting(meeting)
+
+            renamed = store.rename_meeting(meeting["id"], "  Product sync 🚀  ")
+
+            self.assertEqual(renamed["title"], "Product sync 🚀")
+            self.assertEqual(renamed["transcript"], meeting["transcript"])
+            for invalid in ["", "   ", "bad\nname", "bad\x00name", "x" * 121, 42]:
+                with self.assertRaises(ValueError):
+                    store.rename_meeting(meeting["id"], invalid)
+
+    def test_delete_meeting_removes_owned_audio_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory))
+            first = demo_meeting().to_dict()
+            second = demo_meeting().to_dict()
+            second["id"] = "meeting_other123"
+            store.save_meeting(first)
+            store.save_meeting(second)
+            store.save_speakers([{"id": "speaker_1", "name": "A"}])
+            upload = store.save_upload("clip.webm", b"audio")
+            store.save_meeting_audio(first["id"], upload, "audio/webm")
+
+            self.assertTrue(store.delete_meeting(first["id"]))
+            self.assertIsNone(store.get_meeting(first["id"]))
+            self.assertIsNone(store.get_meeting_audio(first["id"]))
+            self.assertIsNotNone(store.get_meeting(second["id"]))
+            self.assertEqual(store.load_speakers()[0]["name"], "A")
+            self.assertFalse(store.delete_meeting(first["id"]))
+
     def test_settings_default_and_atomic_section_update(self):
         with tempfile.TemporaryDirectory() as directory:
             store = LocalStore(Path(directory))
