@@ -181,6 +181,19 @@
           </label>
         </div>
         <div class="settings-divider"></div>
+        <h3>AI agent access (MCP)</h3>
+        <p class="settings-copy">Meeter must remain running. The service is available only on this laptop; cloud-hosted agents cannot reach localhost.</p>
+        <div class="mcp-status-row"><span id="mcp-status-dot"></span><strong id="mcp-status-text">Checking…</strong><code id="mcp-url"></code><button class="secondary-button compact" data-action="copy-mcp-url">Copy URL</button></div>
+        <div class="settings-toggle-row">
+          <span><strong>Start MCP with Meeter</strong><small id="mcp-enabled-note">Disabling this disconnects configured AI clients.</small></span>
+          <label class="settings-switch"><input id="mcp-enabled-toggle" type="checkbox" aria-label="Start MCP with Meeter"><span aria-hidden="true"><i></i></span></label>
+        </div>
+        <div class="mcp-controls">
+          <label><strong>Privacy level</strong><select id="mcp-privacy"><option value="insights">Insights only</option><option value="excerpts">Matching transcript excerpts</option><option value="full">Full transcripts</option></select></label>
+          <div class="settings-toggle-row"><span><strong>Redact personal information</strong><small>Hide email addresses and phone numbers.</small></span><label class="settings-switch"><input id="mcp-pii-toggle" type="checkbox" aria-label="Redact personal information"><span aria-hidden="true"><i></i></span></label></div>
+        </div>
+        <details class="mcp-recipes"><summary>Connect an AI agent</summary><p class="settings-copy">Use this URL as a Streamable HTTP MCP server in your client.</p><div id="mcp-client-recipes"></div></details>
+        <div class="settings-divider"></div>
         <h3>Known voices</h3>
         <p class="settings-copy">Enroll a clean 20–60 second voice sample to recognize a colleague in future meetings. Unmatched voices remain clearly labeled as unknown.</p>
         <div id="speaker-library" class="speaker-library"></div>

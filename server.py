@@ -15,6 +15,8 @@ from uuid import uuid4
 
 from meeter.demo import demo_meeting
 from meeter.local_models import ModelNotReady
+from meeter.mcp_access import PrivacyLevel
+from meeter.mcp_manager import McpServiceManager
 from meeter.pipeline import MeetingPipeline
 from meeter.storage import LocalStore
 
@@ -35,10 +37,13 @@ def normalize_media_type(value: str | None, filename: str) -> str:
     return "application/octet-stream"
 
 
-def parse_managed_bool(name: str) -> bool | None:
+def parse_managed_bool(name: str, *, strict: bool = False) -> bool | None:
     if name not in os.environ:
         return None
-    return os.environ[name].strip().lower() not in {"", "0", "false", "no", "off"}
+    value = os.environ[name].strip().lower()
+    if strict and value not in {"1", "true", "yes", "on", "0", "false", "no", "off"}:
+        raise ValueError(f"{name} must be true or false")
+    return value not in {"", "0", "false", "no", "off"}
 
 
 class JobManager:
@@ -96,11 +101,19 @@ class JobManager:
 class MeeterServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], store: LocalStore):
+    def __init__(self, address: tuple[str, int], store: LocalStore, *, start_mcp: bool = True):
         self.store = store
         self.pipeline = MeetingPipeline(store)
         self.jobs = JobManager(self.pipeline)
         super().__init__(address, RequestHandler)
+        self.mcp = McpServiceManager(store.root, self.mcp_settings, int(os.environ.get("MEETER_MCP_PORT", "4318")))
+        if start_mcp and self.mcp_settings()["enabled"]:
+            self.mcp.start_async()
+
+    def server_close(self) -> None:
+        if hasattr(self, "mcp"):
+            self.mcp.stop()
+        super().server_close()
 
     def audio_settings(self) -> dict[str, Any]:
         settings, settings_error = self.store.load_settings_state()
@@ -115,6 +128,36 @@ class MeeterServer(ThreadingHTTPServer):
             "managed": managed is not None,
             "managed_by": "MEETER_KEEP_AUDIO" if managed is not None else None,
             "error": settings_error,
+        }
+
+    def mcp_settings(self) -> dict[str, Any]:
+        settings, settings_error = self.store.load_settings_state()
+        saved = settings.get("mcp", {})
+        enabled = saved.get("enabled", False) if isinstance(saved, dict) else False
+        privacy = saved.get("privacy", "insights") if isinstance(saved, dict) else "insights"
+        redact_pii = saved.get("redact_pii", True) if isinstance(saved, dict) else True
+        if not isinstance(enabled, bool) or privacy not in {"insights", "excerpts", "full"} or not isinstance(redact_pii, bool):
+            enabled, privacy, redact_pii = False, "insights", True
+            settings_error = settings_error or "MCP settings are invalid and have been disabled."
+        privacy_managed = "MEETER_MCP_PRIVACY" in os.environ
+        pii_managed = "MEETER_MCP_REDACT_PII" in os.environ
+        if privacy_managed:
+            try:
+                privacy = PrivacyLevel.parse(os.environ["MEETER_MCP_PRIVACY"]).name.lower()
+            except ValueError:
+                enabled, privacy = False, "insights"
+                settings_error = "MEETER_MCP_PRIVACY is invalid and MCP has been disabled."
+        if pii_managed:
+            try:
+                redact_pii = bool(parse_managed_bool("MEETER_MCP_REDACT_PII", strict=True))
+            except ValueError:
+                enabled, redact_pii = False, True
+                settings_error = "MEETER_MCP_REDACT_PII is invalid and MCP has been disabled."
+        status = self.mcp.status() if hasattr(self, "mcp") else {"state": "stopped", "error": None, "url": f"http://127.0.0.1:{int(os.environ.get('MEETER_MCP_PORT', '4318'))}/mcp"}
+        return {
+            "enabled": enabled, "privacy": privacy, "redact_pii": redact_pii,
+            "managed": {"privacy": privacy_managed, "redact_pii": pii_managed, "allowlist": "MEETER_MCP_ALLOWED_MEETINGS" in os.environ},
+            "error": settings_error or status["error"], "status": status["state"], "url": status["url"],
         }
 
 
@@ -195,6 +238,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/settings/audio":
             self._json(self.server.audio_settings())
+            return
+        if path == "/api/settings/mcp":
+            self._json(self.server.mcp_settings())
             return
         self._serve_static(path)
 
@@ -309,6 +355,30 @@ class RequestHandler(BaseHTTPRequestHandler):
                     "audio", {"retain_recordings": payload["retain_recordings"]}
                 )
                 self._json(self.server.audio_settings())
+                return
+            if path == "/api/settings/mcp":
+                payload = self._read_json()
+                allowed = {"enabled", "privacy", "redact_pii"}
+                if not payload or set(payload) - allowed:
+                    raise ValueError("Expected enabled, privacy, or redact_pii")
+                before = self.server.mcp_settings()
+                if "enabled" in payload and not isinstance(payload["enabled"], bool):
+                    raise ValueError("enabled must be a boolean")
+                if "privacy" in payload:
+                    if before["managed"]["privacy"]:
+                        self._json({"error": "MCP privacy is managed by MEETER_MCP_PRIVACY"}, 409); return
+                    if not isinstance(payload["privacy"], str):
+                        raise ValueError("privacy must be insights, excerpts, or full")
+                    PrivacyLevel.parse(payload["privacy"])
+                if "redact_pii" in payload:
+                    if not isinstance(payload["redact_pii"], bool):
+                        raise ValueError("redact_pii must be a boolean")
+                    if before["managed"]["redact_pii"]:
+                        self._json({"error": "PII redaction is managed by MEETER_MCP_REDACT_PII"}, 409); return
+                self.server.store.update_settings_section("mcp", payload)
+                after = self.server.mcp_settings()
+                self.server.mcp.apply(before, after)
+                self._json(self.server.mcp_settings())
                 return
             self._json({"error": "Not found"}, 404)
         except (ValueError, json.JSONDecodeError) as exc:

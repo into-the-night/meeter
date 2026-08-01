@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +37,7 @@ def _meeting_ids(value: str) -> frozenset[str] | None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Meeter's local, read-only MCP server over stdio")
+    parser = argparse.ArgumentParser(description="Run Meeter's local, read-only MCP server")
     parser.add_argument("--data-dir", type=Path, default=None, help="Meeter data directory")
     parser.add_argument(
         "--privacy",
@@ -55,12 +57,17 @@ def _parser() -> argparse.ArgumentParser:
         default=_meeting_ids(os.environ.get("MEETER_MCP_ALLOWED_MEETINGS", "")),
         help="Optional comma-separated allowlist of meeting IDs",
     )
+    parser.add_argument("--transport", choices=("stdio", "streamable-http"), default="stdio")
+    parser.add_argument("--host", choices=("127.0.0.1",), default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("MEETER_MCP_PORT", "4318")))
+    parser.add_argument("--parent-pid", type=int, default=None, help=argparse.SUPPRESS)
     return parser
 
 
-def create_mcp_server(service: MeetingContextService) -> Any:
+def create_mcp_server(service: MeetingContextService, *, host: str = "127.0.0.1", port: int = 4318) -> Any:
     try:
         from mcp.server.fastmcp import FastMCP
+        from mcp.server.transport_security import TransportSecuritySettings
     except ImportError as exc:
         raise RuntimeError(
             "The MCP SDK is not installed. Run: python3 -m pip install -r requirements-mcp.txt"
@@ -72,6 +79,16 @@ def create_mcp_server(service: MeetingContextService) -> Any:
             "Read-only access to locally stored Meeter insights. "
             "Use returned meeting IDs for follow-up calls. Respect the privacy metadata in every result. "
             "This server cannot create, update, or delete meetings, actions, speakers, or files."
+        ),
+        host=host,
+        port=port,
+        streamable_http_path="/mcp",
+        stateless_http=True,
+        json_response=True,
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=[f"127.0.0.1:{port}", f"localhost:{port}"],
+            allowed_origins=[f"http://127.0.0.1:{port}", f"http://localhost:{port}"],
         ),
     )
 
@@ -134,11 +151,20 @@ def main() -> None:
     )
     service = MeetingContextService(ReadOnlyMeetingStore(args.data_dir), config)
     try:
-        server = create_mcp_server(service)
+        server = create_mcp_server(service, host=args.host, port=args.port)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(2) from exc
-    server.run(transport="stdio")
+    if args.parent_pid:
+        def parent_watchdog() -> None:
+            while True:
+                try:
+                    os.kill(args.parent_pid, 0)
+                except OSError:
+                    os._exit(0)
+                time.sleep(1)
+        threading.Thread(target=parent_watchdog, daemon=True).start()
+    server.run(transport=args.transport)
 
 
 if __name__ == "__main__":

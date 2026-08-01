@@ -15,7 +15,7 @@ from server import JobManager, MeeterServer
 class ServerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.server = MeeterServer(("127.0.0.1", 0), LocalStore(Path(self.temp.name)))
+        self.server = MeeterServer(("127.0.0.1", 0), LocalStore(Path(self.temp.name)), start_mcp=False)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
         self.base = f"http://127.0.0.1:{self.server.server_port}"
@@ -88,6 +88,39 @@ class ServerTests(unittest.TestCase):
             with self.assertRaises(urllib.error.HTTPError) as raised:
                 urllib.request.urlopen(request, timeout=3)
             self.assertEqual(raised.exception.code, 409)
+
+    def test_mcp_settings_default_update_and_managed_overrides(self):
+        status, settings = self.request_json("/api/settings/mcp")
+        self.assertEqual(status, 200)
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["privacy"], "insights")
+        self.assertTrue(settings["redact_pii"])
+        self.assertEqual(settings["url"], "http://127.0.0.1:4318/mcp")
+
+        with patch.object(self.server.mcp, "apply") as apply:
+            status, updated = self.request_json(
+                "/api/settings/mcp", '{"privacy":"excerpts","redact_pii":false}', method="PUT"
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(updated["privacy"], "excerpts")
+            self.assertFalse(updated["redact_pii"])
+            apply.assert_called_once()
+
+        with patch.dict("os.environ", {"MEETER_MCP_PRIVACY": "full", "MEETER_MCP_REDACT_PII": "true"}):
+            _, managed = self.request_json("/api/settings/mcp")
+            self.assertEqual(managed["privacy"], "full")
+            self.assertTrue(managed["redact_pii"])
+            self.assertTrue(managed["managed"]["privacy"])
+            request = urllib.request.Request(self.base + "/api/settings/mcp", data=b'{"privacy":"insights"}', headers={"Content-Type": "application/json"}, method="PUT")
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=3)
+            self.assertEqual(raised.exception.code, 409)
+
+        with patch.dict("os.environ", {"MEETER_MCP_REDACT_PII": "sometimes"}):
+            _, invalid = self.request_json("/api/settings/mcp")
+            self.assertFalse(invalid["enabled"])
+            self.assertTrue(invalid["redact_pii"])
+            self.assertIn("invalid", invalid["error"])
 
     def test_meeting_audio_full_head_ranges_and_missing(self):
         meeting = demo_meeting().to_dict()

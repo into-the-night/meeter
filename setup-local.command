@@ -14,6 +14,7 @@ else
   print "✓ Existing isolated Python environment"
 fi
 uv pip install --python .venv/bin/python -r requirements-local-models.txt
+uv pip install --python .venv/bin/python -r requirements-mcp.txt
 .venv/bin/python setup_models.py
 
 print ""

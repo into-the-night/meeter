@@ -13,6 +13,7 @@ from typing import Any
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "audio": {"retain_recordings": True},
+    "mcp": {"enabled": True, "privacy": "insights", "redact_pii": True},
 }
 
 
@@ -173,10 +174,12 @@ class LocalStore:
                 saved = json.load(handle)
         except (OSError, json.JSONDecodeError):
             settings["audio"]["retain_recordings"] = False
-            return settings, "Settings could not be read; audio retention is disabled until they are saved again."
+            settings["mcp"]["enabled"] = False
+            return settings, "Settings could not be read; audio retention and MCP are disabled until they are saved again."
         if not isinstance(saved, dict):
             settings["audio"]["retain_recordings"] = False
-            return settings, "Settings are invalid; audio retention is disabled until they are saved again."
+            settings["mcp"]["enabled"] = False
+            return settings, "Settings are invalid; audio retention and MCP are disabled until they are saved again."
         for section, value in saved.items():
             if isinstance(value, dict) and isinstance(settings.get(section), dict):
                 settings[section].update(value)

@@ -5,6 +5,7 @@ const state = {
   tab: "overview",
   health: null,
   audioSettings: null,
+  mcpSettings: null,
   speakers: [],
   recording: false,
   recorder: null,
@@ -1039,10 +1040,11 @@ function filterTranscript() {
 async function showSettings() {
   setModal("#settings-modal", true);
   try {
-    const [health, speakers, audioSettings] = await Promise.all([api("/api/health"), api("/api/speakers"), api("/api/settings/audio")]);
+    const [health, speakers, audioSettings, mcpSettings] = await Promise.all([api("/api/health"), api("/api/speakers"), api("/api/settings/audio"), api("/api/settings/mcp")]);
     state.health = health;
     state.speakers = speakers.speakers || [];
     state.audioSettings = audioSettings;
+    state.mcpSettings = mcpSettings;
     const components = health.readiness?.components || {};
     $("#model-status").innerHTML = Object.entries(components).map(([name, ready]) => `<div class="model-item ${ready ? "ready" : ""}"><span class="model-light"></span><span><strong>${escapeHtml(name)}</strong><small>${ready ? "Local path configured" : name === "summarization" ? "Using offline fallback" : "Setup required"}</small></span></div>`).join("");
     $("#speaker-library").innerHTML = state.speakers.length ? state.speakers.map((speaker) => `<span class="speaker-chip"><span>${escapeHtml(initials(speaker.name))}</span>${escapeHtml(speaker.name)}</span>`).join("") : `<span class="settings-copy">No voices enrolled yet.</span>`;
@@ -1054,7 +1056,42 @@ async function showSettings() {
       : audioSettings.managed
       ? "Managed by MEETER_KEEP_AUDIO. Change the environment setting and restart Meeter to update it."
       : "Store original recordings on this device for transcript playback.";
+    renderMcpSettings();
   } catch (error) { toast(error.message, "error"); }
+}
+
+function renderMcpSettings() {
+  const value = state.mcpSettings;
+  if (!value) return;
+  $("#mcp-enabled-toggle").checked = value.enabled;
+  $("#mcp-privacy").value = value.privacy;
+  $("#mcp-privacy").disabled = value.managed.privacy;
+  $("#mcp-pii-toggle").checked = value.redact_pii;
+  $("#mcp-pii-toggle").disabled = value.managed.redact_pii;
+  $("#mcp-status-dot").className = value.status;
+  $("#mcp-status-text").textContent = value.error || value.status[0].toUpperCase() + value.status.slice(1);
+  $("#mcp-url").textContent = value.url;
+  const recipes = {
+    "Codex": `codex mcp add meeter --url ${value.url}`,
+    "Claude Code": `claude mcp add --transport http meeter ${value.url}`,
+    "Cursor": `Add ${value.url} as a Streamable HTTP server in Settings → MCP`,
+    "Gemini CLI": `Add a meeter httpUrl entry pointing to ${value.url} in settings.json`,
+  };
+  $("#mcp-client-recipes").innerHTML = Object.entries(recipes).map(([name, recipe]) => `<div class="mcp-recipe"><strong>${escapeHtml(name)}</strong><code>${escapeHtml(recipe)}</code><button class="secondary-button compact" data-action="copy-mcp-recipe" data-recipe="${escapeHtml(recipe)}">Copy</button></div>`).join("");
+  if (value.status === "starting") window.setTimeout(refreshMcpStatus, 500);
+}
+
+async function refreshMcpStatus() {
+  if ($("#settings-modal").hidden) return;
+  try { state.mcpSettings = await api("/api/settings/mcp"); renderMcpSettings(); } catch (_) { /* retain the last useful status */ }
+}
+
+async function updateMcpSettings(change) {
+  try {
+    state.mcpSettings = await api("/api/settings/mcp", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(change) });
+    renderMcpSettings();
+    window.setTimeout(refreshMcpStatus, 500);
+  } catch (error) { renderMcpSettings(); toast(error.message, "error"); }
 }
 
 async function updateAudioRetention(enabled) {
@@ -1124,6 +1161,8 @@ document.addEventListener("click", async (event) => {
   if (action === "show-actions") { showActions(); $("#sidebar").classList.remove("open"); }
   if (action === "settings") { hideCaptureWorkspace(); showSettings(); }
   if (action === "close-settings") setModal("#settings-modal", false);
+  if (action === "copy-mcp-url") copyText(state.mcpSettings?.url || "", trigger, "Copied");
+  if (action === "copy-mcp-recipe") copyText(trigger.dataset.recipe, trigger, "Copied");
   if (action === "open-rename-meeting") openRenameMeeting();
   if (action === "close-rename-meeting") closeRenameMeeting();
   if (action === "open-delete-meeting") openDeleteMeeting();
@@ -1178,6 +1217,12 @@ document.addEventListener("input", (event) => {
 document.addEventListener("change", (event) => {
   if (event.target.matches("#speaker-filter")) filterTranscript();
   if (event.target.matches("#audio-retention-toggle")) updateAudioRetention(event.target.checked);
+  if (event.target.matches("#mcp-enabled-toggle")) updateMcpSettings({ enabled: event.target.checked });
+  if (event.target.matches("#mcp-privacy")) updateMcpSettings({ privacy: event.target.value });
+  if (event.target.matches("#mcp-pii-toggle")) {
+    if (!event.target.checked && !window.confirm("Turn off PII redaction? Email addresses and phone numbers may be shared with connected AI agents.")) { event.target.checked = true; return; }
+    updateMcpSettings({ redact_pii: event.target.checked });
+  }
   if (event.target.matches("#library-sort")) renderLibraryCards();
   if (event.target.matches("#microphone-select")) {
     changeMicrophone(event.target.value);

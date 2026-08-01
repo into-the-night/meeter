@@ -37,7 +37,7 @@ python3 -m unittest discover -s tests -v
 ## Read-only MCP server
 
 Meeter includes a local MCP server for sharing approved meeting context with MCP-compatible
-AI clients. It uses stdio, reads the same local meeting files as Meeter, and has no tools that
+AI clients. By default it starts with Meeter at `http://127.0.0.1:4318/mcp` using Streamable HTTP, reads the same local meeting files, and has no tools that
 create, update, or delete data.
 
 Install the stable MCP SDK:
@@ -50,7 +50,11 @@ If you do not use Meeter's project environment, install it with
 `python3 -m pip install -r requirements-mcp.txt` instead. The launcher selects an installed
 environment automatically.
 
-Then configure an MCP client to launch:
+Open **Settings → AI agent access (MCP)** for copyable setup instructions for Codex, Claude Code,
+Cursor, and Gemini CLI. Meeter must remain open, and cloud-hosted agents cannot connect to a
+laptop's localhost address. The service can be disabled there at any time.
+
+For clients that require stdio, configure the fallback launcher:
 
 ```bash
 /absolute/path/to/meeter/run-meeter-mcp.command

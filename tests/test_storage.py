@@ -89,6 +89,7 @@ class StorageTests(unittest.TestCase):
             settings, error = store.load_settings_state()
 
             self.assertFalse(settings["audio"]["retain_recordings"])
+            self.assertFalse(settings["mcp"]["enabled"])
             self.assertIn("disabled", error)
 
 
