@@ -195,6 +195,9 @@ mark { padding: 0 2px; border-radius: 2px; background: #fff0ac; color: inherit; 
 .participant-manage strong { font-size: 10.5px; }
 .participant-manage small { display: block; margin-top: 2px; color: #9697a5; font-size: 9px; }
 .rename-button { margin-left: auto; border: 0; background: transparent; color: var(--purple); font-size: 9px; cursor: pointer; }
+.listen-button { margin-left: auto; padding: 6px 10px; border: 1px solid #d8d4f3; border-radius: 8px; background: var(--purple-soft); color: var(--purple); font-size: 9px; font-weight: 700; cursor: pointer; }
+.listen-button + .rename-button { margin-left: 0; }
+.listen-button.active { border-color: var(--purple); background: var(--purple); color: white; }
 .empty-state { padding: 28px; text-align: center; color: #8b8c9a; font-size: 11px; }
 
 .modal-layer { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(24,23,38,.38); backdrop-filter: blur(6px); animation: fade-in .18s ease; }

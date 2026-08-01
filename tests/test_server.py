@@ -137,6 +137,29 @@ class ServerTests(unittest.TestCase):
         self.assertIn("active-audio", script)
         self.assertIn("Audio unavailable", script)
 
+    def test_voice_snippet_ui_contract(self):
+        with urllib.request.urlopen(self.base + "/app.js", timeout=3) as response:
+            script = response.read().decode("utf-8")
+        self.assertIn('data-action="play-voice-snippet"', script)
+        self.assertIn("toggleVoiceSnippet", script)
+        self.assertIn("meetingPlayback.snippetEnd", script)
+
+    def test_speaker_rename_preserves_voice_snippet(self):
+        meeting = demo_meeting().to_dict()
+        participant = meeting["participants"][0]
+        old_name = participant["name"]
+        participant["voice_snippet"] = {"start_seconds": 2.0, "end_seconds": 6.0}
+        self.server.store.save_meeting(meeting)
+
+        status, updated = self.request_json(
+            f"/api/meetings/{meeting['id']}/speaker-name",
+            json.dumps({"old_name": old_name, "new_name": "Renamed speaker"}),
+        )
+
+        self.assertEqual(status, 200)
+        renamed = next(item for item in updated["participants"] if item["name"] == "Renamed speaker")
+        self.assertEqual(renamed["voice_snippet"], {"start_seconds": 2.0, "end_seconds": 6.0})
+
 
 class JobManagerTests(unittest.TestCase):
     def test_success_publishes_meeting_only_after_audio_metadata(self):

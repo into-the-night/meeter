@@ -60,6 +60,7 @@ class McpAccessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             meeting = demo_meeting().to_dict()
             meeting["audio"] = {"mime_type": "audio/webm", "size_bytes": 1234}
+            meeting["participants"][0]["voice_snippet"] = {"start_seconds": 1.5, "end_seconds": 5.0}
             LocalStore(Path(directory)).save_meeting(meeting)
             service = self.service(directory, PrivacyLevel.FULL)
 
@@ -69,6 +70,8 @@ class McpAccessTests(unittest.TestCase):
             self.assertNotIn("source_name", result)
             self.assertNotIn("audio", result)
             self.assertNotIn("confidence", result["transcript"][0])
+            insights = service.get_meeting_insights(meeting["id"])
+            self.assertNotIn("voice_snippet", insights["meeting"]["participants"][0])
 
     def test_allowlist_hides_other_meetings(self):
         with tempfile.TemporaryDirectory() as directory:

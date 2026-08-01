@@ -60,6 +60,46 @@ def recognize_clusters(
     return rows, list(participant_map.values())
 
 
+def select_voice_snippets(
+    diarization: list[DiarizationTurn],
+    rows: list[dict[str, Any]],
+    participants: list[dict[str, Any]],
+    minimum_seconds: float = 1.5,
+    maximum_seconds: float = 6.0,
+) -> list[dict[str, Any]]:
+    """Attach the best short diarization interval for each recognized participant."""
+    cluster_keys: dict[str, str] = {}
+    for row in rows:
+        cluster = str(row.get("cluster", ""))
+        if cluster and cluster not in cluster_keys:
+            cluster_keys[cluster] = str(row.get("speaker_id") or cluster)
+
+    best_by_participant: dict[str, DiarizationTurn] = {}
+    for turn in diarization:
+        duration = float(turn.end) - float(turn.start)
+        participant_key = cluster_keys.get(turn.label)
+        if participant_key is None or duration < minimum_seconds:
+            continue
+        current = best_by_participant.get(participant_key)
+        if current is None or duration > float(current.end) - float(current.start):
+            best_by_participant[participant_key] = turn
+
+    output: list[dict[str, Any]] = []
+    for participant in participants:
+        enriched = dict(participant)
+        turn = best_by_participant.get(str(participant.get("id", "")))
+        if turn is not None:
+            duration = float(turn.end) - float(turn.start)
+            snippet_duration = min(duration, maximum_seconds)
+            start = float(turn.start) + (duration - snippet_duration) / 2
+            enriched["voice_snippet"] = {
+                "start_seconds": round(start, 3),
+                "end_seconds": round(start + snippet_duration, 3),
+            }
+        output.append(enriched)
+    return output
+
+
 class MeetingPipeline:
     def __init__(self, store: LocalStore):
         self.store = store
@@ -91,6 +131,7 @@ class MeetingPipeline:
         except ModelNotReady:
             embeddings = {}
         rows, participants = recognize_clusters(rows, embeddings, profiles)
+        participants = select_voice_snippets(diarization, rows, participants)
         progress("Writing minutes and actions", 76)
         summary, model_note = summarize(rows, self.llm if self.llm.configured else None)
         meeting = Meeting(

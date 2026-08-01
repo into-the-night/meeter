@@ -228,11 +228,36 @@ function participantAvatars(participants = []) {
   return participants.slice(0, 5).map((person) => `<span class="participant-avatar ${person.known === false ? "unknown" : ""}" title="${escapeHtml(person.name)}">${escapeHtml(initials(person.name))}</span>`).join("");
 }
 
+const meetingPlayback = {
+  snippetAudio: null,
+  snippetButton: null,
+  snippetEnd: null,
+};
+
+function resetSnippetPlayback() {
+  if (meetingPlayback.snippetAudio) {
+    meetingPlayback.snippetAudio.pause();
+  }
+  if (meetingPlayback.snippetButton) {
+    meetingPlayback.snippetButton.classList.remove("active");
+    meetingPlayback.snippetButton.setAttribute("aria-pressed", "false");
+    meetingPlayback.snippetButton.textContent = "Listen";
+  }
+  meetingPlayback.snippetAudio = null;
+  meetingPlayback.snippetButton = null;
+  meetingPlayback.snippetEnd = null;
+}
+
+function resetMeetingPlayback() {
+  const fullAudio = $("#meeting-audio");
+  if (fullAudio) fullAudio.pause();
+  resetSnippetPlayback();
+}
+
 function renderMeeting() {
   const meeting = state.current;
   if (!meeting) return showWelcome();
-  const previousAudio = $("#meeting-audio");
-  if (previousAudio) previousAudio.pause();
+  resetMeetingPlayback();
   const unknownCount = (meeting.participants || []).filter((person) => person.known === false).length;
   $("#app").innerHTML = `
     <section class="meeting-page">
@@ -364,6 +389,7 @@ function setupTranscriptPlayback() {
     });
   };
   audio.addEventListener("timeupdate", updateActiveTurn);
+  audio.addEventListener("play", resetSnippetPlayback);
   audio.addEventListener("seeked", updateActiveTurn);
   audio.addEventListener("ended", updateActiveTurn);
   audio.addEventListener("error", () => {
@@ -384,6 +410,46 @@ async function seekTranscript(start) {
   }
 }
 
+async function toggleVoiceSnippet(button, start, end) {
+  const sameSnippet = meetingPlayback.snippetButton === button && meetingPlayback.snippetAudio;
+  if (sameSnippet && !meetingPlayback.snippetAudio.paused) {
+    meetingPlayback.snippetAudio.pause();
+    button.classList.remove("active");
+    button.setAttribute("aria-pressed", "false");
+    button.textContent = "Listen";
+    return;
+  }
+  if (!sameSnippet) {
+    resetMeetingPlayback();
+    const audio = new Audio(`/api/meetings/${encodeURIComponent(state.current.id)}/audio`);
+    meetingPlayback.snippetAudio = audio;
+    meetingPlayback.snippetButton = button;
+    meetingPlayback.snippetEnd = end;
+    audio.preload = "metadata";
+    audio.addEventListener("timeupdate", () => {
+      if (audio === meetingPlayback.snippetAudio && audio.currentTime >= meetingPlayback.snippetEnd) resetMeetingPlayback();
+    });
+    audio.addEventListener("ended", () => {
+      if (audio === meetingPlayback.snippetAudio) resetMeetingPlayback();
+    });
+    audio.addEventListener("error", () => {
+      if (audio !== meetingPlayback.snippetAudio) return;
+      resetMeetingPlayback();
+      toast("Voice snippet could not be played", "error");
+    });
+    audio.currentTime = start;
+  }
+  try {
+    button.classList.add("active");
+    button.setAttribute("aria-pressed", "true");
+    button.textContent = "Pause";
+    await meetingPlayback.snippetAudio.play();
+  } catch {
+    resetMeetingPlayback();
+    toast("Voice snippet could not be played", "error");
+  }
+}
+
 function renderDetails() {
   const meeting = state.current;
   return `<div class="details-grid">
@@ -401,6 +467,7 @@ function renderDetails() {
         <div class="participant-manage">
           <span class="participant-avatar ${person.known === false ? "unknown" : ""}">${escapeHtml(initials(person.name))}</span>
           <span><strong>${escapeHtml(person.name)}</strong><small>${person.known === false ? "Unknown voice · only in this meeting" : "Recognized local profile"}</small></span>
+          ${meeting.audio && person.voice_snippet ? `<button class="listen-button" data-action="play-voice-snippet" data-start="${Number(person.voice_snippet.start_seconds)}" data-end="${Number(person.voice_snippet.end_seconds)}" aria-pressed="false" aria-label="Listen to ${escapeHtml(person.name)} voice snippet">Listen</button>` : ""}
           <button class="rename-button" data-action="rename-speaker" data-name="${escapeHtml(person.name)}">Rename</button>
         </div>`).join("")}
     </article>
@@ -983,6 +1050,7 @@ document.addEventListener("click", async (event) => {
   if (action === "close-settings") setModal("#settings-modal", false);
   if (action === "tab") { state.tab = trigger.dataset.tab; renderMeeting(); }
   if (action === "seek-transcript") seekTranscript(trigger.dataset.start);
+  if (action === "play-voice-snippet") toggleVoiceSnippet(trigger, Number(trigger.dataset.start), Number(trigger.dataset.end));
   if (action === "copy-summary") copyText(`${state.current.title}\n\n${state.current.summary}\n\nDecisions:\n${(state.current.decisions || []).map((item) => `• ${item}`).join("\n")}`, trigger, "Copied");
   if (action === "export-markdown") exportMarkdown(trigger);
   if (action === "copy-action") { const item = findAction(trigger.dataset.id); if (item) copyText(actionText(item), trigger, "Copied"); }
