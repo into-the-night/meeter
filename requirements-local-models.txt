@@ -1,5 +1,6 @@
 # Install only from your organization's approved package mirror.
 faster-whisper>=1.1,<2
+qwen-asr>=0.0.6,<0.1
 sherpa-onnx>=1.10.28,<2
 numpy>=1.26,<3
 llama-cpp-python>=0.3,<1

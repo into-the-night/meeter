@@ -7,10 +7,10 @@ It ships with a polished zero-dependency demo mode. For real audio processing, p
 ## What it does
 
 - Records microphone and shared device/tab audio from the browser, with independent live source toggles, or imports common audio/video files.
-- Transcribes with a local Whisper model through `faster-whisper`.
+- Transcribes diarized speaker batches with local Qwen3-ASR-0.6B on Apple Silicon or CUDA. A `faster-whisper` backend remains available for managed legacy installs.
 - Handles Hindi–English code-switching, including Devanagari and Romanized Hindi, while preserving English names and technical terms.
 - Diarizes with local sherpa-onnx models, recognizes enrolled voices, and labels every unmatched voice as a stable unknown speaker.
-- Produces decisions, risks, discussion notes, and actionable tasks using a local GGUF model through `llama-cpp-python` (with a deterministic offline fallback).
+- Produces minutes and actions with Qwen3-1.7B through `llama-cpp-python`; long transcripts are first reduced into bounded deterministic evidence batches and later reconciled (with a fully deterministic offline fallback).
 - Copies individual actions or complete action lists and downloads calendar events without sending meeting data off-device.
 - Stores data locally and binds only to the loopback interface.
 
@@ -103,20 +103,21 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-local-models.txt
 
-export MEETER_WHISPER_MODEL="/approved-models/faster-whisper-large-v3"
+export MEETER_ASR_BACKEND="qwen3"
+export MEETER_QWEN_ASR_MODEL="/approved-models/Qwen3-ASR-0.6B"
 export MEETER_DIARIZATION_MODEL="/approved-models/sherpa-onnx-pyannote-segmentation-3-0/model.onnx"
 export MEETER_EMBEDDING_MODEL="/approved-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-export MEETER_LLM_MODEL="/approved-models/Qwen3-4B-Q4_K_M.gguf"
+export MEETER_LLM_MODEL="/approved-models/Qwen3-1.7B-Q4_K_M.gguf"
 python3 server.py
 ```
 
 Suggested hardware profiles:
 
-| Laptop | Speech model | Local LLM |
+| Laptop | Speech model | Local summary models |
 | --- | --- | --- |
-| 16 GB RAM, CPU only | distil-large-v3 or small.en | 3B Q4 GGUF |
-| Apple Silicon, 16–32 GB | large-v3 | Qwen3 4B Q4 GGUF |
-| 32 GB+ / approved GPU | large-v3 | 8B–14B Q4 GGUF |
+| 16 GB RAM, CPU only | faster-whisper distil-large-v3 | Qwen3 1.7B reconciliation |
+| Apple Silicon, 16–32 GB | Qwen3-ASR-0.6B | Qwen3 1.7B reconciliation |
+| 32 GB+ / approved GPU | Qwen3-ASR-0.6B or 1.7B | 1.7B batches + 4B reconciliation |
 
 Python 3.12 is installed inside the project. PyAV handles common audio/video formats without a separate ffmpeg installation.
 
@@ -138,7 +139,7 @@ For stronger protection, place that directory on an encrypted, access-controlled
 
 - `server.py` — loopback-only HTTP server and asynchronous job endpoints.
 - `meeter/pipeline.py` — local transcription, diarization, recognition, and summary orchestration.
-- `meeter/local_models.py` — lazy adapters for optional local model runtimes.
+- `meeter/local_models.py` — lazy Qwen3-ASR, Whisper, speaker, and GGUF adapters.
 - `meeter/summarizer.py` — prompt/schema validation and offline fallback.
 - `web/` — dependency-free responsive UI.
 - `tests/` — storage, summary, export, and API-contract checks.

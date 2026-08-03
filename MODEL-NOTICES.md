@@ -4,8 +4,8 @@ Meeter's setup script downloads model weights only during the explicit setup ste
 
 | Component | Upstream | Stated license |
 | --- | --- | --- |
-| Speech transcription | [Systran/faster-whisper-large-v3](https://huggingface.co/Systran/faster-whisper-large-v3) | MIT |
-| MoM generation | [Qwen/Qwen3-4B-GGUF](https://huggingface.co/Qwen/Qwen3-4B-GGUF) | Apache 2.0 |
+| Speech transcription | [Qwen/Qwen3-ASR-0.6B](https://huggingface.co/Qwen/Qwen3-ASR-0.6B) | Apache 2.0 |
+| Final minutes reconciliation | [Qwen/Qwen3-1.7B-GGUF](https://huggingface.co/Qwen/Qwen3-1.7B-GGUF) | Apache 2.0 |
 | Diarization runtime | [k2-fsa/sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) | Apache 2.0 |
 | Segmentation and embedding weights | [sherpa-onnx speaker models](https://github.com/k2-fsa/sherpa-onnx/releases) | Per-model terms included or linked by upstream |
 

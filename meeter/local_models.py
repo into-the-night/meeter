@@ -65,6 +65,128 @@ class WhisperAdapter:
         return rows, detected_language, duration
 
 
+class QwenASRAdapter:
+    """Batch Qwen3-ASR over diarization turns so timestamps remain local and useful."""
+
+    def __init__(self) -> None:
+        self._model: Any = None
+
+    @staticmethod
+    def _merge_turns(diarization: list[DiarizationTurn]) -> list[DiarizationTurn]:
+        maximum_seconds = float(os.environ.get("MEETER_ASR_CHUNK_SECONDS", "30"))
+        maximum_gap = float(os.environ.get("MEETER_ASR_MERGE_GAP", "0.35"))
+        merged: list[DiarizationTurn] = []
+        for turn in sorted(diarization, key=lambda item: (item.start, item.end)):
+            if turn.end <= turn.start:
+                continue
+            previous = merged[-1] if merged else None
+            if (
+                previous is not None
+                and previous.label == turn.label
+                and turn.start - previous.end <= maximum_gap
+                and turn.end - previous.start <= maximum_seconds
+            ):
+                previous.end = max(previous.end, turn.end)
+            else:
+                merged.append(DiarizationTurn(float(turn.start), float(turn.end), str(turn.label)))
+        return merged
+
+    def _load(self) -> None:
+        if self._model is not None:
+            return
+        model_path = _approved_path("MEETER_QWEN_ASR_MODEL")
+        try:
+            import torch
+            from qwen_asr import Qwen3ASRModel
+        except ImportError as exc:
+            raise ModelNotReady("Install the approved qwen-asr and torch packages") from exc
+
+        configured_device = os.environ.get("MEETER_QWEN_ASR_DEVICE", "").strip()
+        if configured_device:
+            device = configured_device
+        elif torch.cuda.is_available():
+            device = "cuda:0"
+        elif getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+            device = "mps"
+        else:
+            device = "cpu"
+        dtype = torch.float32 if device == "cpu" else torch.float16
+        self._model = Qwen3ASRModel.from_pretrained(
+            str(model_path),
+            device_map=device,
+            dtype=dtype,
+            max_inference_batch_size=int(os.environ.get("MEETER_ASR_BATCH_SIZE", "8")),
+            max_new_tokens=int(os.environ.get("MEETER_ASR_MAX_TOKENS", "384")),
+            local_files_only=True,
+        )
+
+    def transcribe_turns(
+        self,
+        audio_path: Path,
+        diarization: list[DiarizationTurn],
+    ) -> tuple[list[dict[str, Any]], str, float]:
+        try:
+            import numpy as np
+            from faster_whisper.audio import decode_audio
+        except ImportError as exc:
+            raise ModelNotReady("Install the approved numpy and faster-whisper packages") from exc
+
+        self._load()
+        sample_rate = 16000
+        samples = decode_audio(str(audio_path), sampling_rate=sample_rate)
+        duration = len(samples) / sample_rate
+        turns = self._merge_turns(diarization)
+        if not turns and duration > 0:
+            turns = [DiarizationTurn(0.0, duration, "UNKNOWN")]
+
+        prompt = os.environ.get(
+            "MEETER_ASR_PROMPT",
+            "Business meeting with natural Hindi and English code-switching. "
+            "Preserve the script actually spoken, names, numbers, dates, and technical terms.",
+        )
+        batch_size = max(1, int(os.environ.get("MEETER_ASR_BATCH_SIZE", "8")))
+        rows: list[dict[str, Any]] = []
+        languages: list[str] = []
+        for offset in range(0, len(turns), batch_size):
+            batch = turns[offset : offset + batch_size]
+            audio_batch: list[tuple[Any, int]] = []
+            valid_turns: list[DiarizationTurn] = []
+            for turn in batch:
+                start = max(0, int(turn.start * sample_rate))
+                end = min(len(samples), int(turn.end * sample_rate))
+                if end <= start:
+                    continue
+                audio_batch.append((np.asarray(samples[start:end], dtype=np.float32), sample_rate))
+                valid_turns.append(turn)
+            if not audio_batch:
+                continue
+            results = self._model.transcribe(audio=audio_batch, context=[prompt] * len(audio_batch))
+            for turn, result in zip(valid_turns, results):
+                text = str(result.text).strip()
+                language = str(result.language or "und")
+                languages.append(language)
+                if text:
+                    rows.append({
+                        "start": float(turn.start),
+                        "end": float(turn.end),
+                        "text": text,
+                        "cluster": turn.label,
+                    })
+
+        normalized = {language.lower() for language in languages if language and language != "und"}
+        has_hindi = any(language in {"hi", "hindi"} for language in normalized)
+        has_english = any(language in {"en", "english"} for language in normalized)
+        if has_hindi and has_english:
+            detected_language = "hi-en"
+        elif len(normalized) == 1:
+            detected_language = next(iter(normalized))
+        elif normalized:
+            detected_language = "multilingual"
+        else:
+            detected_language = "und"
+        return rows, detected_language, duration
+
+
 class DiarizationAdapter:
     def __init__(self) -> None:
         self._pipeline: Any = None
@@ -202,15 +324,17 @@ class EmbeddingAdapter:
 
 
 class LlamaCppAdapter:
-    def __init__(self) -> None:
+    def __init__(self, model_env: str = "MEETER_LLM_MODEL", max_tokens: int = 1800) -> None:
         self._model: Any = None
+        self.model_env = model_env
+        self.max_tokens = max_tokens
 
     @property
     def configured(self) -> bool:
-        return bool(os.environ.get("MEETER_LLM_MODEL", "").strip())
+        return bool(os.environ.get(self.model_env, "").strip())
 
     def __call__(self, prompt: str) -> str:
-        model_path = _approved_path("MEETER_LLM_MODEL")
+        model_path = _approved_path(self.model_env)
         try:
             from llama_cpp import Llama
         except ImportError as exc:
@@ -259,12 +383,12 @@ class LlamaCppAdapter:
         }
         result = self._model.create_chat_completion(
             messages=[{"role": "user", "content": prompt + "\n/no_think"}],
-            temperature=0.3,
+            temperature=float(os.environ.get("MEETER_LLM_TEMPERATURE", "0.1")),
             top_p=0.8,
             top_k=20,
             presence_penalty=1.0,
             response_format={"type": "json_object", "schema": response_schema},
-            max_tokens=1800,
+            max_tokens=self.max_tokens,
         )
         return str(result["choices"][0]["message"]["content"])
 

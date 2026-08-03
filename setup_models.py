@@ -18,15 +18,15 @@ from huggingface_hub import snapshot_download
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
-WHISPER_DIR = MODELS / "faster-whisper-large-v3"
+QWEN_ASR_DIR = MODELS / "Qwen3-ASR-0.6B"
 DIARIZATION_DIR = MODELS / "sherpa-onnx-pyannote-segmentation-3-0"
 DIARIZATION_MODEL = DIARIZATION_DIR / "model.onnx"
 EMBEDDING_MODEL = MODELS / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-LLM_MODEL = MODELS / "Qwen3-4B-Q4_K_M.gguf"
+LLM_MODEL = MODELS / "Qwen3-1.7B-Q4_K_M.gguf"
 
 SEGMENTATION_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
 EMBEDDING_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-LLM_URL = "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf?download=true"
+LLM_URL = "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf?download=true"
 
 
 def download(url: str, target: Path) -> None:
@@ -60,34 +60,38 @@ def install_segmentation() -> None:
 
 
 def install_huggingface_models() -> None:
-    if not (WHISPER_DIR / "model.bin").is_file():
-        print("↓ Whisper large-v3 (about 3.1 GB)")
+    if not (QWEN_ASR_DIR / "model.safetensors").is_file():
+        print("↓ Qwen3-ASR 0.6B (about 1.9 GB)")
         snapshot_download(
-            repo_id="Systran/faster-whisper-large-v3",
-            local_dir=WHISPER_DIR,
-            allow_patterns=["config.json", "model.bin", "preprocessor_config.json", "tokenizer.json", "vocabulary.json"],
+            repo_id="Qwen/Qwen3-ASR-0.6B",
+            local_dir=QWEN_ASR_DIR,
+            allow_patterns=["*.json", "*.txt", "*.safetensors", "README.md", "LICENSE*"],
         )
     else:
-        print("✓ Whisper model already present")
+        print("✓ Qwen3-ASR model already present")
 
     if not LLM_MODEL.is_file():
-        print("↓ Qwen3 4B Q4_K_M (about 2.5 GB, Apache 2.0)")
+        print("↓ Qwen3 1.7B Q4_K_M (about 1.3 GB, Apache 2.0)")
         download(LLM_URL, LLM_MODEL)
     else:
-        print("✓ Local summary model already present")
+        print("✓ Local reconciliation model already present")
+
 
 
 def write_environment() -> None:
     values = {
-        "MEETER_WHISPER_MODEL": WHISPER_DIR,
-        "MEETER_WHISPER_DEVICE": "cpu",
-        "MEETER_WHISPER_COMPUTE": "int8",
-        "MEETER_EXPECT_CODE_SWITCHING": "1",
+        "MEETER_ASR_BACKEND": "qwen3",
+        "MEETER_QWEN_ASR_MODEL": QWEN_ASR_DIR,
+        "MEETER_ASR_BATCH_SIZE": "8",
         "MEETER_DIARIZATION_MODEL": DIARIZATION_MODEL,
         "MEETER_EMBEDDING_MODEL": EMBEDDING_MODEL,
         "MEETER_LLM_MODEL": LLM_MODEL,
         "MEETER_LLM_CONTEXT": "8192",
         "MEETER_LLM_GPU_LAYERS": "-1",
+        "MEETER_SUMMARY_BATCH_CHARS": "4000",
+        "MEETER_SUMMARY_BATCH_SECONDS": "300",
+        "MEETER_EXTRACTIVE_RECONCILIATION": "1",
+        "MEETER_SUMMARY_RECONCILE_MIN_CHARS": "18000",
         "MEETER_SHERPA_THREADS": "4",
         "MEETER_KEEP_AUDIO": "0",
     }

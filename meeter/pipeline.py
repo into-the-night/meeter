@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
 from .domain import ActionItem, Meeting, TranscriptTurn
-from .local_models import DiarizationAdapter, DiarizationTurn, EmbeddingAdapter, LlamaCppAdapter, ModelNotReady, WhisperAdapter, cosine_similarity
+from .local_models import DiarizationAdapter, DiarizationTurn, EmbeddingAdapter, LlamaCppAdapter, ModelNotReady, QwenASRAdapter, WhisperAdapter, cosine_similarity
 from .storage import LocalStore
 from .summarizer import summarize
 
@@ -103,14 +104,17 @@ def select_voice_snippets(
 class MeetingPipeline:
     def __init__(self, store: LocalStore):
         self.store = store
+        self.asr_backend = os.environ.get("MEETER_ASR_BACKEND", "whisper").strip().lower()
         self.whisper = WhisperAdapter()
+        self.qwen_asr = QwenASRAdapter()
         self.diarizer = DiarizationAdapter()
         self.embedder = EmbeddingAdapter()
         self.llm = LlamaCppAdapter()
+        self.batch_llm = LlamaCppAdapter("MEETER_LLM_BATCH_MODEL", max_tokens=900)
 
     def readiness(self) -> dict[str, Any]:
         keys = {
-            "transcription": "MEETER_WHISPER_MODEL",
+            "transcription": "MEETER_QWEN_ASR_MODEL" if self.asr_backend == "qwen3" else "MEETER_WHISPER_MODEL",
             "diarization": "MEETER_DIARIZATION_MODEL",
             "recognition": "MEETER_EMBEDDING_MODEL",
             "summarization": "MEETER_LLM_MODEL",
@@ -119,11 +123,19 @@ class MeetingPipeline:
         return {"ready": configured["transcription"] and configured["diarization"], "components": configured, "network": "loopback-only"}
 
     def process(self, audio_path: Path, source_name: str, progress: Progress) -> dict[str, Any]:
-        progress("Transcribing locally", 12)
-        segments, language, duration = self.whisper.transcribe(audio_path)
-        progress("Separating speakers", 42)
-        diarization = self.diarizer.diarize(audio_path)
-        rows = assign_diarization(segments, diarization)
+        if self.asr_backend == "qwen3":
+            progress("Separating speakers", 12)
+            diarization = self.diarizer.diarize(audio_path)
+            progress("Transcribing local speaker batches", 31)
+            rows, language, duration = self.qwen_asr.transcribe_turns(audio_path, diarization)
+        else:
+            progress("Transcribing and separating speakers", 12)
+            with ThreadPoolExecutor(max_workers=2, thread_name_prefix="meeter-audio") as executor:
+                transcription_future = executor.submit(self.whisper.transcribe, audio_path)
+                diarization_future = executor.submit(self.diarizer.diarize, audio_path)
+                segments, language, duration = transcription_future.result()
+                diarization = diarization_future.result()
+            rows = assign_diarization(segments, diarization)
         progress("Recognizing known voices", 61)
         profiles = self.store.load_speakers()
         try:
@@ -133,7 +145,11 @@ class MeetingPipeline:
         rows, participants = recognize_clusters(rows, embeddings, profiles)
         participants = select_voice_snippets(diarization, rows, participants)
         progress("Writing minutes and actions", 76)
-        summary, model_note = summarize(rows, self.llm if self.llm.configured else None)
+        summary, model_note = summarize(
+            rows,
+            self.llm if self.llm.configured else None,
+            self.batch_llm if self.batch_llm.configured else None,
+        )
         meeting = Meeting(
             title=summary["title"],
             duration=duration,

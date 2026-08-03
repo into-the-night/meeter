@@ -1,10 +1,19 @@
 import unittest
 
-from meeter.local_models import DiarizationTurn
+from meeter.local_models import DiarizationTurn, QwenASRAdapter
 from meeter.pipeline import assign_diarization, recognize_clusters, select_voice_snippets
 
 
 class PipelineTests(unittest.TestCase):
+    def test_qwen_chunks_merge_adjacent_same_speaker_turns(self):
+        turns = [
+            DiarizationTurn(0.0, 2.0, "A"),
+            DiarizationTurn(2.2, 4.0, "A"),
+            DiarizationTurn(4.1, 6.0, "B"),
+        ]
+        result = QwenASRAdapter._merge_turns(turns)
+        self.assertEqual([(turn.start, turn.end, turn.label) for turn in result], [(0.0, 4.0, "A"), (4.1, 6.0, "B")])
+
     def test_assigns_speaker_by_maximum_overlap(self):
         segments = [
             {"start": 0.0, "end": 2.0, "text": "Hello"},
