@@ -1121,6 +1121,11 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .meeting-edit-modal label { display: block; margin: 20px 0 7px; color: var(--muted); font-size: 11px; font-weight: 700; }
 .meeting-edit-modal input { box-sizing: border-box; width: 100%; height: 44px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; font: inherit; }
 .meeting-edit-modal .cancel-confirm-actions { margin-top: 22px; }
+.speaker-edit-modal { position: relative; padding-top: 34px; }
+.speaker-edit-avatar { display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 13px; border-radius: 14px; background: var(--purple-soft); color: var(--purple); font-size: 11px; font-weight: 800; }
+.speaker-edit-kicker { margin: 0 0 5px; color: var(--purple); font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.speaker-edit-modal h2 { margin: 0; }
+.speaker-edit-copy { margin: 9px 0 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .form-error { margin: 7px 0 0; color: #a94137; font-size: 10px; }
 .danger-zone { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-color: #efd2cc; }
 .danger-zone h2 { margin: 0 0 5px; color: #8e352d; font-size: 14px; }

@@ -141,6 +141,22 @@
       </form>
     </div>
 
+    <div class="modal-layer" id="rename-speaker-modal" hidden>
+      <form class="modal meeting-edit-modal speaker-edit-modal" id="rename-speaker-form" role="dialog" aria-modal="true" aria-labelledby="rename-speaker-title">
+        <span class="speaker-edit-avatar" id="rename-speaker-avatar" aria-hidden="true"></span>
+        <p class="speaker-edit-kicker">This meeting only</p>
+        <h2 id="rename-speaker-title">Name this speaker</h2>
+        <p class="speaker-edit-copy" id="rename-speaker-copy"></p>
+        <label for="speaker-rename-input">Speaker name</label>
+        <input id="speaker-rename-input" name="speaker" type="text" maxlength="80" required aria-describedby="speaker-rename-error">
+        <p class="form-error" id="speaker-rename-error" role="alert" hidden></p>
+        <div class="cancel-confirm-actions">
+          <button class="secondary-button" type="button" data-action="close-rename-speaker">Cancel</button>
+          <button class="primary-button" id="rename-speaker-submit" type="submit">Save speaker</button>
+        </div>
+      </form>
+    </div>
+
     <div class="modal-layer" id="delete-meeting-modal" hidden>
       <div class="modal cancel-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-meeting-title" aria-describedby="delete-meeting-copy">
         <span class="cancel-confirm-icon" aria-hidden="true">×</span>

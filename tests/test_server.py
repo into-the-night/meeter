@@ -295,6 +295,12 @@ class ServerTests(unittest.TestCase):
         self.assertIn('data-action="open-delete-meeting"', script)
         self.assertIn('method: "PATCH"', script)
         self.assertIn('method: "DELETE"', script)
+        self.assertIn('id="rename-speaker-modal"', (Path(__file__).resolve().parents[1] / "web" / "index.html").read_text())
+        self.assertIn('form.querySelector(".form-error")', script)
+        self.assertIn('renameSpeakerTrigger?.focus()', script)
+        self.assertNotIn('window.prompt(', script)
+        self.assertIn('draggable="false" data-action="rename-speaker"', script)
+        self.assertIn('event.target.closest("button, input, select, textarea, a")', script)
 
     def test_speaker_rename_preserves_voice_snippet(self):
         meeting = demo_meeting().to_dict()

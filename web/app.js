@@ -41,6 +41,29 @@ const state = {
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+let renameSpeakerTrigger = null;
+
+function ensureRenameSpeakerDialog() {
+  if ($("#rename-speaker-modal")) return;
+  document.body.insertAdjacentHTML("beforeend", `
+    <div class="modal-layer" id="rename-speaker-modal" hidden>
+      <form class="modal meeting-edit-modal speaker-edit-modal" id="rename-speaker-form" role="dialog" aria-modal="true" aria-labelledby="rename-speaker-title">
+        <span class="speaker-edit-avatar" id="rename-speaker-avatar" aria-hidden="true"></span>
+        <p class="speaker-edit-kicker">This meeting only</p>
+        <h2 id="rename-speaker-title">Name this speaker</h2>
+        <p class="speaker-edit-copy" id="rename-speaker-copy"></p>
+        <label for="speaker-rename-input">Speaker name</label>
+        <input id="speaker-rename-input" name="speaker" type="text" maxlength="80" required aria-describedby="speaker-rename-error">
+        <p class="form-error" id="speaker-rename-error" role="alert" hidden></p>
+        <div class="cancel-confirm-actions">
+          <button class="secondary-button" type="button" data-action="close-rename-speaker">Cancel</button>
+          <button class="primary-button" id="rename-speaker-submit" type="submit">Save speaker</button>
+        </div>
+      </form>
+    </div>`);
+}
+
+ensureRenameSpeakerDialog();
 // Longer independently decodable batches amortize diarization, decoding, upload,
 // and generation setup while preserving a small boundary overlap.
 const RECORDING_BATCH_MS = 75000;
@@ -483,8 +506,8 @@ function renderDetails() {
         <div class="participant-manage" draggable="true" data-speaker-name="${escapeHtml(person.name)}" aria-label="${escapeHtml(person.name)}. Drag onto another speaker to combine them.">
           <span class="participant-avatar ${person.known === false ? "unknown" : ""}">${escapeHtml(initials(person.name))}</span>
           <span><strong>${escapeHtml(person.name)}</strong><small>${person.known === false ? "Unknown voice · only in this meeting" : "Recognized local profile"}</small></span>
-          ${meeting.audio && person.voice_snippet ? `<button class="listen-button" data-action="play-voice-snippet" data-start="${Number(person.voice_snippet.start_seconds)}" data-end="${Number(person.voice_snippet.end_seconds)}" aria-pressed="false" aria-label="Listen to ${escapeHtml(person.name)} voice snippet">Listen</button>` : ""}
-          <button class="rename-button" data-action="rename-speaker" data-name="${escapeHtml(person.name)}">Rename</button>
+          ${meeting.audio && person.voice_snippet ? `<button class="listen-button" type="button" draggable="false" data-action="play-voice-snippet" data-start="${Number(person.voice_snippet.start_seconds)}" data-end="${Number(person.voice_snippet.end_seconds)}" aria-pressed="false" aria-label="Listen to ${escapeHtml(person.name)} voice snippet">Listen</button>` : ""}
+          <button class="rename-button" type="button" draggable="false" data-action="rename-speaker" data-name="${escapeHtml(person.name)}">Rename</button>
         </div>`).join("")}
     </article>
     <article class="card card-pad danger-zone">
@@ -535,6 +558,28 @@ function openRenameMeeting() {
 function closeRenameMeeting() {
   setModal("#rename-meeting-modal", false);
   $("[data-action='open-rename-meeting']")?.focus();
+}
+
+function openRenameSpeaker(oldName) {
+  const form = $("#rename-speaker-form");
+  const input = $("#speaker-rename-input");
+  const unknown = oldName.toLowerCase().includes("unknown");
+  form.querySelector(".form-error").hidden = true;
+  $("#rename-speaker-avatar").textContent = initials(oldName);
+  $("#rename-speaker-title").textContent = unknown ? "Name this speaker" : "Rename speaker";
+  $("#rename-speaker-copy").textContent = unknown
+    ? "Give this voice a clear label for this meeting's transcript."
+    : `Update ${oldName}'s label everywhere it appears in this meeting.`;
+  input.value = unknown ? "" : oldName;
+  form.dataset.oldName = oldName;
+  setModal("#rename-speaker-modal", true);
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+}
+
+function closeRenameSpeaker() {
+  setModal("#rename-speaker-modal", false);
+  renameSpeakerTrigger?.focus();
+  renameSpeakerTrigger = null;
 }
 
 function openDeleteMeeting() {
@@ -1311,15 +1356,31 @@ async function enrollVoice(file) {
   } catch (error) { toast(error.message, "error"); }
 }
 
-async function renameSpeaker(oldName) {
-  const newName = window.prompt(`Rename “${oldName}” in this meeting:`, oldName.toLowerCase().includes("unknown") ? "" : oldName);
-  if (!newName || newName.trim() === oldName) return;
+async function renameSpeaker() {
+  const form = $("#rename-speaker-form");
+  const oldName = form.dataset.oldName;
+  const input = $("#speaker-rename-input");
+  const submit = $("#rename-speaker-submit");
+  const errorNode = form.querySelector(".form-error");
+  const newName = input.value.trim();
+  if (!newName || newName === oldName) return closeRenameSpeaker();
+  submit.disabled = true;
+  submit.textContent = "Saving…";
+  errorNode.hidden = true;
   try {
-    state.current = await api(`/api/meetings/${encodeURIComponent(state.current.id)}/speaker-name`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ old_name: oldName, new_name: newName.trim() }) });
+    state.current = await api(`/api/meetings/${encodeURIComponent(state.current.id)}/speaker-name`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ old_name: oldName, new_name: newName }) });
+    closeRenameSpeaker();
     renderMeeting();
     await refreshMeetings();
     toast("Speaker renamed for this meeting");
-  } catch (error) { toast(error.message, "error"); }
+  } catch (error) {
+    errorNode.textContent = error.message;
+    errorNode.hidden = false;
+    input.focus();
+  } finally {
+    submit.disabled = false;
+    submit.textContent = "Save speaker";
+  }
 }
 
 async function mergeSpeakers(sourceName, targetName) {
@@ -1395,7 +1456,11 @@ document.addEventListener("click", async (event) => {
       api(`/api/meetings/${encodeURIComponent(state.current.id)}/action-state`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action_id: item.id, completed: item.completed }) }).then(refreshMeetings).catch((error) => toast(error.message, "error"));
     }
   }
-  if (action === "rename-speaker") renameSpeaker(trigger.dataset.name);
+  if (action === "rename-speaker") {
+    renameSpeakerTrigger = trigger;
+    openRenameSpeaker(trigger.dataset.name);
+  }
+  if (action === "close-rename-speaker") closeRenameSpeaker();
   if (action === "choose-voice") $("#voice-file-input").click();
 });
 
@@ -1441,6 +1506,7 @@ document.addEventListener("change", (event) => {
 
 let draggedSpeaker = "";
 document.addEventListener("dragstart", (event) => {
+  if (event.target.closest("button, input, select, textarea, a")) return;
   const row = event.target.closest(".participant-manage[data-speaker-name]");
   if (!row) return;
   draggedSpeaker = row.dataset.speakerName;
@@ -1482,8 +1548,14 @@ document.addEventListener("keydown", (event) => {
     renameMeeting();
     return;
   }
+  if (event.key === "Enter" && event.target.matches("#speaker-rename-input") && !$("#rename-speaker-modal").hidden) {
+    event.preventDefault();
+    renameSpeaker();
+    return;
+  }
   if (event.key === "Escape") {
     if (!$("#rename-meeting-modal").hidden) closeRenameMeeting();
+    else if (!$("#rename-speaker-modal").hidden) closeRenameSpeaker();
     else if (!$("#delete-meeting-modal").hidden) closeDeleteMeeting();
     else if (!$("#cancel-confirm-modal").hidden) setModal("#cancel-confirm-modal", false);
     else if (!$("#capture-modal").hidden) closeCapture();
@@ -1494,6 +1566,11 @@ document.addEventListener("keydown", (event) => {
 $("#rename-meeting-form").addEventListener("submit", (event) => {
   event.preventDefault();
   renameMeeting();
+});
+
+$("#rename-speaker-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  renameSpeaker();
 });
 
 async function init() {
