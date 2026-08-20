@@ -1,6 +1,7 @@
 import json
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -62,6 +63,77 @@ class ServerTests(unittest.TestCase):
             self.assertIn('data-action="confirm-cancel"', page)
             self.assertNotIn("Audio check starts when you record", page)
             self.assertNotIn("Ready to record", page)
+
+    def test_recording_batches_process_before_finalization(self):
+        processed = threading.Event()
+        finalized = {}
+
+        def process_chunk(audio_path, index, start, end):
+            processed.set()
+            return {"index": index, "start": start, "end": end, "rows": [], "embeddings": {}, "language": "en"}
+
+        def finalize_chunks(chunks, source_name, duration, progress):
+            finalized.update({"chunks": chunks, "duration": duration})
+            return demo_meeting().to_dict()
+
+        with patch.object(self.server.pipeline, "process_stream_chunk", side_effect=process_chunk), \
+             patch.object(self.server.pipeline, "finalize_stream_chunks", side_effect=finalize_chunks):
+            status, session = self.request_json(
+                "/api/recording-sessions",
+                '{"source_name":"live.webm","mime_type":"audio/webm"}',
+            )
+            self.assertEqual(status, 201)
+            chunk_request = urllib.request.Request(
+                self.base + f"/api/recording-sessions/{session['id']}/chunks",
+                data=b"independent-webm-chunk",
+                headers={
+                    "Content-Type": "audio/webm",
+                    "X-Filename": "batch-0000.webm",
+                    "X-Chunk-Index": "0",
+                    "X-Chunk-Start-Ms": "0",
+                    "X-Chunk-End-Ms": "31500",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(chunk_request, timeout=3) as response:
+                self.assertEqual(response.status, 202)
+            self.assertTrue(processed.wait(2), "batch should process while the session is still recording")
+            _, live = self.request_json(f"/api/recording-sessions/{session['id']}")
+            self.assertEqual(live["state"], "recording")
+
+            final_request = urllib.request.Request(
+                self.base + f"/api/recording-sessions/{session['id']}/finalize",
+                data=b"complete-recording",
+                headers={
+                    "Content-Type": "audio/webm",
+                    "X-Filename": "live.webm",
+                    "X-Recording-Duration-Ms": "30000",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(final_request, timeout=3) as response:
+                job = json.load(response)
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                _, current = self.request_json(f"/api/jobs/{job['id']}")
+                if current["state"] == "complete":
+                    break
+                time.sleep(0.02)
+            self.assertEqual(current["state"], "complete")
+            self.assertEqual(len(finalized["chunks"]), 1)
+            self.assertEqual(finalized["duration"], 30.0)
+            saved = self.server.store.get_meeting(current["meeting_id"])
+            self.assertEqual(saved["audio"]["size_bytes"], len(b"complete-recording"))
+
+    def test_recording_session_cancel_removes_queued_work(self):
+        status, session = self.request_json(
+            "/api/recording-sessions",
+            '{"source_name":"cancel.webm","mime_type":"audio/webm"}',
+        )
+        self.assertEqual(status, 201)
+        status, result = self.request_json(f"/api/recording-sessions/{session['id']}", method="DELETE")
+        self.assertEqual(status, 200)
+        self.assertEqual(result["recording_session_id"], session["id"])
 
     def test_audio_settings_default_update_and_managed_override(self):
         status, settings = self.request_json("/api/settings/audio")

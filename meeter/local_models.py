@@ -3,10 +3,11 @@ from __future__ import annotations
 import math
 import os
 import platform
+import threading
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class ModelNotReady(RuntimeError):
@@ -70,6 +71,16 @@ class QwenASRAdapter:
 
     def __init__(self) -> None:
         self._model: Any = None
+        self._lock = threading.RLock()
+        self.device = "uninitialized"
+
+    @staticmethod
+    def _batch_size(device: str) -> int:
+        """Choose a conservative batch that avoids MPS padding and memory pressure."""
+        configured = os.environ.get("MEETER_ASR_BATCH_SIZE", "").strip()
+        if configured:
+            return max(1, int(configured))
+        return 2 if device == "mps" else 8 if device.startswith("cuda") else 1
 
     @staticmethod
     def _merge_turns(diarization: list[DiarizationTurn]) -> list[DiarizationTurn]:
@@ -101,7 +112,7 @@ class QwenASRAdapter:
         except ImportError as exc:
             raise ModelNotReady("Install the approved qwen-asr and torch packages") from exc
 
-        configured_device = os.environ.get("MEETER_QWEN_ASR_DEVICE", "").strip()
+        configured_device = os.environ.get("MEETER_QWEN_ASR_DEVICE", "").strip().lower()
         if configured_device:
             device = configured_device
         elif torch.cuda.is_available():
@@ -110,13 +121,16 @@ class QwenASRAdapter:
             device = "mps"
         else:
             device = "cpu"
+        if device == "mps" and not (getattr(torch.backends, "mps", None) and torch.backends.mps.is_available()):
+            raise ModelNotReady("MEETER_QWEN_ASR_DEVICE=mps was requested but MPS is unavailable")
         dtype = torch.float32 if device == "cpu" else torch.float16
+        self.device = device
         self._model = Qwen3ASRModel.from_pretrained(
             str(model_path),
             device_map=device,
             dtype=dtype,
-            max_inference_batch_size=int(os.environ.get("MEETER_ASR_BATCH_SIZE", "8")),
-            max_new_tokens=int(os.environ.get("MEETER_ASR_MAX_TOKENS", "384")),
+            max_inference_batch_size=self._batch_size(device),
+            max_new_tokens=int(os.environ.get("MEETER_ASR_MAX_TOKENS", "192")),
             local_files_only=True,
         )
 
@@ -124,6 +138,7 @@ class QwenASRAdapter:
         self,
         audio_path: Path,
         diarization: list[DiarizationTurn],
+        progress: Callable[[int, int], None] | None = None,
     ) -> tuple[list[dict[str, Any]], str, float]:
         try:
             import numpy as np
@@ -131,7 +146,6 @@ class QwenASRAdapter:
         except ImportError as exc:
             raise ModelNotReady("Install the approved numpy and faster-whisper packages") from exc
 
-        self._load()
         sample_rate = 16000
         samples = decode_audio(str(audio_path), sampling_rate=sample_rate)
         duration = len(samples) / sample_rate
@@ -144,47 +158,61 @@ class QwenASRAdapter:
             "Business meeting with natural Hindi and English code-switching. "
             "Preserve the script actually spoken, names, numbers, dates, and technical terms.",
         )
-        batch_size = max(1, int(os.environ.get("MEETER_ASR_BATCH_SIZE", "8")))
+        # The Transformers backend pads each batch to its longest clip. Sorting
+        # by duration before batching substantially reduces padded MPS attention
+        # work while output is put back into timestamp order below.
         rows: list[dict[str, Any]] = []
-        languages: list[str] = []
-        for offset in range(0, len(turns), batch_size):
-            batch = turns[offset : offset + batch_size]
-            audio_batch: list[tuple[Any, int]] = []
-            valid_turns: list[DiarizationTurn] = []
-            for turn in batch:
-                start = max(0, int(turn.start * sample_rate))
-                end = min(len(samples), int(turn.end * sample_rate))
-                if end <= start:
+        language_weights: dict[str, int] = defaultdict(int)
+        work = sorted(turns, key=lambda turn: (turn.end - turn.start, turn.start), reverse=True)
+        with self._lock:
+            self._load()
+            batch_size = self._batch_size(self.device)
+            total_batches = max(1, (len(work) + batch_size - 1) // batch_size)
+            for offset in range(0, len(work), batch_size):
+                batch = work[offset : offset + batch_size]
+                audio_batch: list[tuple[Any, int]] = []
+                valid_turns: list[DiarizationTurn] = []
+                for turn in batch:
+                    start = max(0, int(turn.start * sample_rate))
+                    end = min(len(samples), int(turn.end * sample_rate))
+                    if end <= start:
+                        continue
+                    audio_batch.append((np.asarray(samples[start:end], dtype=np.float32), sample_rate))
+                    valid_turns.append(turn)
+                if not audio_batch:
                     continue
-                audio_batch.append((np.asarray(samples[start:end], dtype=np.float32), sample_rate))
-                valid_turns.append(turn)
-            if not audio_batch:
-                continue
-            results = self._model.transcribe(audio=audio_batch, context=[prompt] * len(audio_batch))
-            for turn, result in zip(valid_turns, results):
-                text = str(result.text).strip()
-                language = str(result.language or "und")
-                languages.append(language)
-                if text:
-                    rows.append({
-                        "start": float(turn.start),
-                        "end": float(turn.end),
-                        "text": text,
-                        "cluster": turn.label,
-                    })
+                results = self._model.transcribe(audio=audio_batch, context=[prompt] * len(audio_batch))
+                for turn, result in zip(valid_turns, results):
+                    text = str(result.text).strip()
+                    language = str(result.language or "und")
+                    if text:
+                        language_weights[language.lower()] += max(1, len(text.split()))
+                        rows.append({
+                            "start": float(turn.start),
+                            "end": float(turn.end),
+                            "text": text,
+                            "cluster": turn.label,
+                        })
+                if progress is not None:
+                    progress(min(offset // batch_size + 1, total_batches), total_batches)
 
-        normalized = {language.lower() for language in languages if language and language != "und"}
-        has_hindi = any(language in {"hi", "hindi"} for language in normalized)
-        has_english = any(language in {"en", "english"} for language in normalized)
+        language_counts = {language: weight for language, weight in language_weights.items() if language and language != "und"}
+        total_language_weight = sum(language_counts.values())
+        hindi_weight = sum(weight for language, weight in language_counts.items() if language in {"hi", "hindi"})
+        english_weight = sum(weight for language, weight in language_counts.items() if language in {"en", "english"})
+        has_hindi = total_language_weight and hindi_weight / total_language_weight >= 0.2
+        has_english = total_language_weight and english_weight / total_language_weight >= 0.2
         if has_hindi and has_english:
             detected_language = "hi-en"
-        elif len(normalized) == 1:
-            detected_language = next(iter(normalized))
-        elif normalized:
+        elif english_weight:
+            detected_language = "en"
+        elif hindi_weight:
+            detected_language = "hi"
+        elif language_counts:
             detected_language = "multilingual"
         else:
             detected_language = "und"
-        return rows, detected_language, duration
+        return sorted(rows, key=lambda row: (float(row["start"]), float(row["end"]))), detected_language, duration
 
 
 class DiarizationAdapter:
@@ -223,7 +251,7 @@ class DiarizationAdapter:
                 ),
                 clustering=sherpa_onnx.FastClusteringConfig(
                     num_clusters=-1,
-                    threshold=float(os.environ.get("MEETER_DIARIZATION_THRESHOLD", "0.5")),
+                    threshold=float(os.environ.get("MEETER_DIARIZATION_THRESHOLD", "1.15")),
                 ),
                 min_duration_on=0.3,
                 min_duration_off=0.5,

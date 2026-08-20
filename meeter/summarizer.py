@@ -11,7 +11,11 @@ SUMMARY_SCHEMA = {
     "title": "string",
     "summary": "string",
     "decisions": ["string"],
-    "actions": [{"text": "string", "owner": "string|null", "due": "YYYY-MM-DD|null", "priority": "low|medium|high", "context": "string"}],
+    "actions": [{
+        "text": "string", "owner": "string|null", "due": "YYYY-MM-DD|null",
+        "priority": "low|medium|high", "context": "string",
+        "evidence_quote": "exact verbatim transcript span", "evidence_start": "number",
+    }],
     "discussion": [{"title": "string", "detail": "string"}],
     "risks": ["string"],
 }
@@ -30,9 +34,10 @@ Return exactly one JSON object matching this schema:
 Rules:
 - Do not invent owners, dates, decisions, or commitments.
 - The transcript may naturally switch between Hindi and English. Understand both, preserve names and product terms, and write the minutes in concise business English.
-- An action requires an explicit commitment or direct request. Preserve uncertainty with null.
-- A person directly addressed with a request is the action owner; an unknown diarized speaker remains an unknown owner.
-- Never translate relative dates such as “कल तक” into today/tomorrow inside action text. Preserve the original wording, and set `due` to null unless a calendar date can be resolved from supplied meeting-date context.
+- An action requires an explicit commitment or direct request, not an agenda item, proposal, aspiration, capability, or general future plan.
+- For every action, copy a short exact supporting span into `evidence_quote` and its transcript timestamp into `evidence_start`. If no exact span proves the commitment or request, omit the action.
+- A person directly addressed with a request is the action owner; otherwise use null. Never use the literal value "Unknown" as an owner.
+- Set `due` to null unless the exact ISO date is spoken in the transcript. Never infer a date from today, a relative date, or a project timeline.
 - Pending items and risks are not decisions. A decision must be explicitly agreed, approved, or selected.
 - Keep the summary under 90 words and every list item crisp.
 - Mention dependencies or unresolved blockers in risks.
@@ -82,6 +87,7 @@ Rules:
 - Deduplicate repeated facts and prefer the most specific supported wording.
 - Do not promote a proposal, pending item, or risk into a decision.
 - Keep an action only when a partial explicitly identifies a commitment or direct request.
+- Preserve the exact `evidence_quote` and `evidence_start` for every retained action. Omit an action if its evidence is absent or ambiguous.
 - Never invent or guess an owner or due date. Preserve null when uncertain.
 - If partial notes conflict, record the unresolved conflict as a risk.
 - Keep the summary under 90 words and every list item crisp.
@@ -120,6 +126,8 @@ def normalize_summary(value: dict[str, Any]) -> dict[str, Any]:
             "due": str(item["due"]).strip() if item.get("due") else None,
             "priority": priority if priority in {"low", "medium", "high"} else "medium",
             "context": str(item.get("context", "")).strip(),
+            "evidence_quote": str(item.get("evidence_quote", "")).strip(),
+            "evidence_start": float(item["evidence_start"]) if isinstance(item.get("evidence_start"), (int, float)) else None,
         })
     discussion = []
     for item in value.get("discussion", []):
@@ -133,6 +141,33 @@ def normalize_summary(value: dict[str, Any]) -> dict[str, Any]:
         "discussion": discussion,
         "risks": [str(item).strip() for item in value.get("risks", []) if str(item).strip()],
     }
+
+
+def ground_actions(summary: dict[str, Any], transcript: list[dict[str, Any]]) -> dict[str, Any]:
+    """Verify model-provided evidence without heuristically extracting actions."""
+    spoken_dates = {match.group(0) for turn in transcript for match in re.finditer(r"\b\d{4}-\d{2}-\d{2}\b", str(turn.get("text", "")))}
+    actions = []
+    for action in summary["actions"]:
+        quote = str(action.get("evidence_quote") or "").strip()
+        evidence_start = action.get("evidence_start")
+        if not quote or evidence_start is None:
+            continue
+        evidence_turn = next((
+            turn for turn in transcript
+            if abs(float(turn.get("start", 0)) - float(evidence_start)) <= 1.0
+            and quote.casefold() in str(turn.get("text", "")).casefold()
+        ), None)
+        if evidence_turn is None:
+            continue
+        sanitized = dict(action)
+        owner = str(sanitized.get("owner") or "").strip()
+        evidence_speaker = str(evidence_turn.get("speaker") or "").strip()
+        if owner and owner.casefold() != evidence_speaker.casefold() and owner.casefold() not in quote.casefold():
+            sanitized["owner"] = None
+        if sanitized.get("due") not in spoken_dates:
+            sanitized["due"] = None
+        actions.append(sanitized)
+    return {**summary, "actions": actions}
 
 
 COMMITMENT = re.compile(
@@ -250,7 +285,7 @@ def summarize(
                     try:
                         if attempt:
                             prompt += "\nReturn every required schema field, even when its value is an empty list."
-                        partial = parse_model_json(batch_model_call(prompt))
+                        partial = ground_actions(parse_model_json(batch_model_call(prompt)), batch)
                         break
                     except (ValueError, TypeError, json.JSONDecodeError):
                         continue
@@ -262,7 +297,7 @@ def summarize(
                 if attempt:
                     prompt += "\nYour previous response was incomplete. Return every required schema field."
                 batch_kind = "models" if batch_model_call is not None else "extractive batches"
-                return parse_model_json(model_call(prompt)), f"Local {batch_kind} ({len(batches)} batches + reconciliation)"
+                return ground_actions(parse_model_json(model_call(prompt)), transcript), f"Local {batch_kind} ({len(batches)} batches + reconciliation)"
             except (ValueError, TypeError, json.JSONDecodeError):
                 continue
         return merge_partial_summaries(partials), "Deterministic reconciliation fallback"
@@ -272,7 +307,7 @@ def summarize(
         try:
             if attempt:
                 prompt += "\nYour previous response was incomplete. Return every required schema field, even when its value is an empty list."
-            return parse_model_json(model_call(prompt)), "Local GGUF model"
+            return ground_actions(parse_model_json(model_call(prompt)), transcript), "Local GGUF model"
         except (ValueError, TypeError, json.JSONDecodeError):
             continue
     return fallback_summary(transcript), "Extractive fallback (local model response was invalid)"

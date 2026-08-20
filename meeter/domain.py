@@ -29,6 +29,8 @@ class ActionItem:
     context: str = ""
     id: str = field(default_factory=lambda: f"action_{uuid4().hex[:10]}")
     completed: bool = False
+    evidence_quote: str | None = None
+    evidence_start: float | None = None
 
 
 @dataclass(slots=True)

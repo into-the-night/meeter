@@ -13,20 +13,21 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
-QWEN_ASR_DIR = MODELS / "Qwen3-ASR-0.6B"
+QWEN_ASR_DIR = MODELS / "Qwen3-ASR-1.7B"
 DIARIZATION_DIR = MODELS / "sherpa-onnx-pyannote-segmentation-3-0"
 DIARIZATION_MODEL = DIARIZATION_DIR / "model.onnx"
 EMBEDDING_MODEL = MODELS / "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-LLM_MODEL = MODELS / "Qwen3-1.7B-Q4_K_M.gguf"
+LLM_MODEL = MODELS / "Qwen3-1.7B-Q8_0.gguf"
 
 SEGMENTATION_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
 EMBEDDING_URL = "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-LLM_URL = "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf?download=true"
+LLM_REPOSITORY = "Qwen/Qwen3-1.7B-GGUF"
+LLM_FILENAME = "Qwen3-1.7B-Q8_0.gguf"
 
 
 def download(url: str, target: Path) -> None:
@@ -60,10 +61,10 @@ def install_segmentation() -> None:
 
 
 def install_huggingface_models() -> None:
-    if not (QWEN_ASR_DIR / "model.safetensors").is_file():
-        print("↓ Qwen3-ASR 0.6B (about 1.9 GB)")
+    if not (QWEN_ASR_DIR / "model.safetensors.index.json").is_file():
+        print("↓ Qwen3-ASR 1.7B (about 4.7 GB)")
         snapshot_download(
-            repo_id="Qwen/Qwen3-ASR-0.6B",
+            repo_id="Qwen/Qwen3-ASR-1.7B",
             local_dir=QWEN_ASR_DIR,
             allow_patterns=["*.json", "*.txt", "*.safetensors", "README.md", "LICENSE*"],
         )
@@ -71,8 +72,12 @@ def install_huggingface_models() -> None:
         print("✓ Qwen3-ASR model already present")
 
     if not LLM_MODEL.is_file():
-        print("↓ Qwen3 1.7B Q4_K_M (about 1.3 GB, Apache 2.0)")
-        download(LLM_URL, LLM_MODEL)
+        print("↓ Qwen3 1.7B Q8_0 (about 1.8 GB, Apache 2.0)")
+        hf_hub_download(
+            repo_id=LLM_REPOSITORY,
+            filename=LLM_FILENAME,
+            local_dir=MODELS,
+        )
     else:
         print("✓ Local reconciliation model already present")
 
@@ -82,8 +87,14 @@ def write_environment() -> None:
     values = {
         "MEETER_ASR_BACKEND": "qwen3",
         "MEETER_QWEN_ASR_MODEL": QWEN_ASR_DIR,
-        "MEETER_ASR_BATCH_SIZE": "8",
+        # MPS pads each item in a generation batch to the longest audio clip.
+        # Two similarly sized clips fit comfortably in 16 GB unified memory and
+        # avoid the severe padding cost seen with the previous batch size of 8.
+        "MEETER_QWEN_ASR_DEVICE": "mps",
+        "MEETER_ASR_BATCH_SIZE": "2",
+        "MEETER_ASR_MAX_TOKENS": "192",
         "MEETER_DIARIZATION_MODEL": DIARIZATION_MODEL,
+        "MEETER_DIARIZATION_THRESHOLD": "1.15",
         "MEETER_EMBEDDING_MODEL": EMBEDDING_MODEL,
         "MEETER_LLM_MODEL": LLM_MODEL,
         "MEETER_LLM_CONTEXT": "8192",

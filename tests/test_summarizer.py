@@ -2,14 +2,14 @@ import json
 import unittest
 from unittest.mock import patch
 
-from meeter.summarizer import fallback_summary, parse_model_json, summarize, transcript_batches
+from meeter.summarizer import fallback_summary, ground_actions, parse_model_json, summarize, transcript_batches
 
 
 class SummarizerTests(unittest.TestCase):
     def test_model_json_is_normalized(self):
         raw = """```json
         {"title":"Launch sync","summary":"We aligned.","decisions":["Ship Friday"],
-        "actions":[{"text":"Send the plan","owner":"Asha","due":"2026-07-20","priority":"URGENT"}],
+        "actions":[{"text":"Send the plan","owner":"Asha","due":"2026-07-20","priority":"URGENT","evidence_quote":"I will send the plan","evidence_start":4}],
         "discussion":[],"risks":[]}
         ```"""
         result = parse_model_json(raw)
@@ -52,10 +52,10 @@ class SummarizerTests(unittest.TestCase):
             {"speaker": "Ben", "start": 400, "text": "I will confirm the release date."},
         ]
         partial_responses = iter([
-            '{"title":"Part 1","summary":"Plan discussed.","decisions":[],"actions":[{"text":"Send launch plan","owner":"Asha","due":null,"priority":"medium","context":"Committed"}],"discussion":[],"risks":[]}',
-            '{"title":"Part 2","summary":"Date discussed.","decisions":[],"actions":[{"text":"Confirm release date","owner":"Ben","due":null,"priority":"medium","context":"Committed"}],"discussion":[],"risks":[]}',
+            '{"title":"Part 1","summary":"Plan discussed.","decisions":[],"actions":[{"text":"Send launch plan","owner":"Asha","due":null,"priority":"medium","context":"Committed","evidence_quote":"I will send the launch plan.","evidence_start":0}],"discussion":[],"risks":[]}',
+            '{"title":"Part 2","summary":"Date discussed.","decisions":[],"actions":[{"text":"Confirm release date","owner":"Ben","due":null,"priority":"medium","context":"Committed","evidence_quote":"I will confirm the release date.","evidence_start":400}],"discussion":[],"risks":[]}',
         ])
-        final_response = '{"title":"Launch sync","summary":"Owners will close launch planning.","decisions":[],"actions":[{"text":"Send launch plan","owner":"Asha","due":null,"priority":"medium","context":"Committed"},{"text":"Confirm release date","owner":"Ben","due":null,"priority":"medium","context":"Committed"}],"discussion":[],"risks":[]}'
+        final_response = '{"title":"Launch sync","summary":"Owners will close launch planning.","decisions":[],"actions":[{"text":"Send launch plan","owner":"Asha","due":null,"priority":"medium","context":"Committed","evidence_quote":"I will send the launch plan.","evidence_start":0},{"text":"Confirm release date","owner":"Ben","due":null,"priority":"medium","context":"Committed","evidence_quote":"I will confirm the release date.","evidence_start":400}],"discussion":[],"risks":[]}'
 
         result, note = summarize(transcript, lambda _: final_response, lambda _: next(partial_responses))
 
@@ -67,7 +67,7 @@ class SummarizerTests(unittest.TestCase):
             {"speaker": "Asha", "start": 0, "text": "I will send the plan."},
             {"speaker": "Ben", "start": 400, "text": "The dependency is blocked."},
         ]
-        response = '{"title":"Sync","summary":"Plan and blocker reviewed.","decisions":[],"actions":[{"text":"Send the plan","owner":"Asha","due":null,"priority":"medium","context":"Committed"}],"discussion":[],"risks":["Dependency is blocked"]}'
+        response = '{"title":"Sync","summary":"Plan and blocker reviewed.","decisions":[],"actions":[{"text":"Send the plan","owner":"Asha","due":null,"priority":"medium","context":"Committed","evidence_quote":"I will send the plan.","evidence_start":0}],"discussion":[],"risks":["Dependency is blocked"]}'
         prompts = []
         with patch.dict("os.environ", {
             "MEETER_EXTRACTIVE_RECONCILIATION": "1",
@@ -82,6 +82,18 @@ class SummarizerTests(unittest.TestCase):
     def test_fallback_recognizes_hindi_commitment_and_owner(self):
         result = fallback_summary([{"speaker": "Asha", "start": 0, "text": "मैं शुक्रवार तक योजना भेजूंगी।"}])
         self.assertEqual(result["actions"][0]["owner"], "Asha")
+
+    def test_action_grounding_requires_exact_model_provided_evidence(self):
+        transcript = [{"speaker": "Asha", "start": 12, "text": "I will send the revised launch plan."}]
+        summary = {"actions": [
+            {"text": "Send revised launch plan", "owner": "Asha", "due": "2026-08-25", "priority": "medium", "context": "", "evidence_quote": "I will send the revised launch plan.", "evidence_start": 12},
+            {"text": "Design a better dashboard", "owner": "Asha", "due": None, "priority": "medium", "context": "", "evidence_quote": "The dashboard must be redesigned", "evidence_start": 12},
+        ]}
+        result = ground_actions(summary, transcript)
+        self.assertEqual(result["actions"], [{
+            "text": "Send revised launch plan", "owner": "Asha", "due": None, "priority": "medium", "context": "",
+            "evidence_quote": "I will send the revised launch plan.", "evidence_start": 12,
+        }])
 
 
 if __name__ == "__main__":

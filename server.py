@@ -5,12 +5,13 @@ import argparse
 import json
 import mimetypes
 import os
+import queue
 import threading
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from meeter.demo import demo_meeting
@@ -51,6 +52,7 @@ class JobManager:
         self.pipeline = pipeline
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
+        self.model_lock = threading.RLock()
 
     def submit(self, audio_path: Path, source_name: str, mime_type: str, retain_audio: bool) -> dict[str, Any]:
         job_id = f"job_{uuid4().hex[:12]}"
@@ -63,15 +65,73 @@ class JobManager:
         ).start()
         return self.get(job_id) or {}
 
+    def submit_stream(
+        self,
+        audio_path: Path,
+        source_name: str,
+        mime_type: str,
+        retain_audio: bool,
+        duration: float,
+        chunk_results: Callable[[], list[dict[str, Any]] | None],
+    ) -> dict[str, Any]:
+        job_id = f"job_{uuid4().hex[:12]}"
+        with self._lock:
+            self._jobs[job_id] = {"id": job_id, "state": "queued", "step": "Finishing queued batches", "progress": 62}
+        threading.Thread(
+            target=self._run_stream,
+            args=(job_id, audio_path, source_name, mime_type, retain_audio, duration, chunk_results),
+            daemon=True,
+        ).start()
+        return self.get(job_id) or {}
+
     def _run(self, job_id: str, audio_path: Path, source_name: str, mime_type: str, retain_audio: bool) -> None:
         def update(step: str, progress: int) -> None:
             with self._lock:
                 self._jobs[job_id].update({"state": "processing", "step": step, "progress": progress})
 
+        def build() -> dict[str, Any]:
+            with self.model_lock:
+                return self.pipeline.process(audio_path, source_name, update)
+
+        self._publish(job_id, audio_path, source_name, mime_type, retain_audio, build)
+
+    def _run_stream(
+        self,
+        job_id: str,
+        audio_path: Path,
+        source_name: str,
+        mime_type: str,
+        retain_audio: bool,
+        duration: float,
+        chunk_results: Callable[[], list[dict[str, Any]] | None],
+    ) -> None:
+        def update(step: str, progress: int) -> None:
+            with self._lock:
+                self._jobs[job_id].update({"state": "processing", "step": step, "progress": progress})
+
+        def build() -> dict[str, Any]:
+            chunks = chunk_results()
+            with self.model_lock:
+                if chunks:
+                    return self.pipeline.finalize_stream_chunks(chunks, source_name, duration, update)
+                update("A batch failed; safely processing the complete recording", 8)
+                return self.pipeline.process(audio_path, source_name, update)
+
+        self._publish(job_id, audio_path, source_name, mime_type, retain_audio, build)
+
+    def _publish(
+        self,
+        job_id: str,
+        audio_path: Path,
+        source_name: str,
+        mime_type: str,
+        retain_audio: bool,
+        build: Callable[[], dict[str, Any]],
+    ) -> None:
         promoted_audio = False
         meeting_id: str | None = None
         try:
-            meeting = self.pipeline.process(audio_path, source_name, update)
+            meeting = build()
             meeting_id = str(meeting["id"])
             if retain_audio:
                 meeting["audio"] = self.pipeline.store.save_meeting_audio(meeting_id, audio_path, mime_type)
@@ -98,6 +158,151 @@ class JobManager:
             return dict(job) if job else None
 
 
+class RecordingSessionManager:
+    """Queue independently decodable audio batches while capture continues."""
+
+    def __init__(self, pipeline: MeetingPipeline, jobs: JobManager):
+        self.pipeline = pipeline
+        self.jobs = jobs
+        self._sessions: dict[str, dict[str, Any]] = {}
+        self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
+        self._queue: queue.Queue[tuple[str, int, Path, float, float]] = queue.Queue()
+        threading.Thread(target=self._worker, name="meeter-recording-batches", daemon=True).start()
+
+    def create(self, source_name: str, mime_type: str, retain_audio: bool) -> dict[str, Any]:
+        session_id = f"recording_{uuid4().hex[:12]}"
+        with self._lock:
+            self._sessions[session_id] = {
+                "id": session_id,
+                "state": "recording",
+                "source_name": source_name,
+                "mime_type": mime_type,
+                "retain_audio": retain_audio,
+                "chunks": {},
+                "job_id": None,
+                "error": None,
+                "cancelled": False,
+            }
+        return self.get(session_id) or {}
+
+    def add_chunk(self, session_id: str, index: int, path: Path, start: float, end: float) -> dict[str, Any]:
+        if index < 0 or start < 0 or end <= start:
+            path.unlink(missing_ok=True)
+            raise ValueError("Invalid recording batch metadata")
+        with self._condition:
+            session = self._sessions.get(session_id)
+            if session is None or session["cancelled"]:
+                path.unlink(missing_ok=True)
+                raise ValueError("Recording session not found")
+            if session["state"] != "recording":
+                path.unlink(missing_ok=True)
+                raise ValueError("Recording session is no longer accepting batches")
+            if index in session["chunks"]:
+                path.unlink(missing_ok=True)
+                raise ValueError("Recording batch index was already received")
+            session["chunks"][index] = {"status": "queued", "path": path, "start": start, "end": end}
+            self._queue.put((session_id, index, path, start, end))
+            self._condition.notify_all()
+        return self.get(session_id) or {}
+
+    def finalize(self, session_id: str, audio_path: Path, source_name: str, mime_type: str, duration: float) -> dict[str, Any]:
+        with self._condition:
+            session = self._sessions.get(session_id)
+            if session is None or session["cancelled"]:
+                audio_path.unlink(missing_ok=True)
+                raise ValueError("Recording session not found")
+            if session["job_id"]:
+                audio_path.unlink(missing_ok=True)
+                raise ValueError("Recording session was already finalized")
+            session["state"] = "finalizing"
+            job = self.jobs.submit_stream(
+                audio_path,
+                source_name,
+                mime_type,
+                bool(session["retain_audio"]),
+                duration,
+                lambda: self._wait_results(session_id),
+            )
+            session["job_id"] = job["id"]
+            self._condition.notify_all()
+            return job
+
+    def cancel(self, session_id: str) -> bool:
+        with self._condition:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return False
+            session["cancelled"] = True
+            session["state"] = "cancelled"
+            for chunk in session["chunks"].values():
+                if chunk["status"] == "queued":
+                    Path(chunk["path"]).unlink(missing_ok=True)
+            self._condition.notify_all()
+        return True
+
+    def get(self, session_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return None
+            chunks = list(session["chunks"].values())
+            return {
+                "id": session_id,
+                "state": session["state"],
+                "received_chunks": len(chunks),
+                "processed_chunks": sum(chunk["status"] == "complete" for chunk in chunks),
+                "failed_chunks": sum(chunk["status"] == "error" for chunk in chunks),
+                "job_id": session["job_id"],
+                "error": session["error"],
+            }
+
+    def _worker(self) -> None:
+        while True:
+            session_id, index, path, start, end = self._queue.get()
+            try:
+                with self._condition:
+                    session = self._sessions.get(session_id)
+                    if session is None or session["cancelled"]:
+                        path.unlink(missing_ok=True)
+                        continue
+                    session["chunks"][index]["status"] = "processing"
+                with self.jobs.model_lock:
+                    result = self.pipeline.process_stream_chunk(path, index, start, end)
+                with self._condition:
+                    chunk = self._sessions[session_id]["chunks"][index]
+                    chunk.update({"status": "complete", "result": result})
+                    self._condition.notify_all()
+            except Exception as exc:
+                with self._condition:
+                    session = self._sessions.get(session_id)
+                    if session is not None:
+                        session["chunks"][index]["status"] = "error"
+                        session["error"] = str(exc)
+                        self._condition.notify_all()
+            finally:
+                path.unlink(missing_ok=True)
+                self._queue.task_done()
+
+    def _wait_results(self, session_id: str) -> list[dict[str, Any]] | None:
+        with self._condition:
+            while True:
+                session = self._sessions.get(session_id)
+                if session is None or session["cancelled"]:
+                    return None
+                chunks = list(session["chunks"].values())
+                pending = any(chunk["status"] in {"queued", "processing"} for chunk in chunks)
+                if not pending:
+                    session["state"] = "processing"
+                    if not chunks or any(chunk["status"] == "error" for chunk in chunks):
+                        self._sessions.pop(session_id, None)
+                        return None
+                    results = [session["chunks"][index]["result"] for index in sorted(session["chunks"])]
+                    self._sessions.pop(session_id, None)
+                    return results
+                self._condition.wait(timeout=1)
+
+
 class MeeterServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -105,6 +310,7 @@ class MeeterServer(ThreadingHTTPServer):
         self.store = store
         self.pipeline = MeetingPipeline(store)
         self.jobs = JobManager(self.pipeline)
+        self.recordings = RecordingSessionManager(self.pipeline, self.jobs)
         super().__init__(address, RequestHandler)
         self.mcp = McpServiceManager(store.root, self.mcp_settings, int(os.environ.get("MEETER_MCP_PORT", "4318")))
         if start_mcp and self.mcp_settings()["enabled"]:
@@ -231,6 +437,10 @@ class RequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/jobs/"):
             job = self.server.jobs.get(path.rsplit("/", 1)[-1])
             self._json(job if job else {"error": "Job not found"}, 200 if job else 404)
+            return
+        if path.startswith("/api/recording-sessions/"):
+            session = self.server.recordings.get(path.rsplit("/", 1)[-1])
+            self._json(session if session else {"error": "Recording session not found"}, 200 if session else 404)
             return
         if path == "/api/speakers":
             profiles = [{"id": item.get("id"), "name": item.get("name")} for item in self.server.store.load_speakers()]
@@ -404,6 +614,12 @@ class RequestHandler(BaseHTTPRequestHandler):
             return
         path = urllib.parse.urlparse(self.path).path
         parts = path.strip("/").split("/")
+        if len(parts) == 3 and parts[:2] == ["api", "recording-sessions"]:
+            if self.server.recordings.cancel(parts[2]):
+                self._json({"ok": True, "recording_session_id": parts[2]})
+            else:
+                self._json({"error": "Recording session not found"}, 404)
+            return
         if len(parts) == 3 and parts[:2] == ["api", "meetings"]:
             meeting_id = parts[2]
             if self.server.store.delete_meeting(meeting_id):
@@ -426,6 +642,16 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/meetings/process":
                 self._process_upload()
+                return
+            if path == "/api/recording-sessions":
+                self._create_recording_session()
+                return
+            parts = path.strip("/").split("/")
+            if len(parts) == 4 and parts[:2] == ["api", "recording-sessions"] and parts[3] == "chunks":
+                self._add_recording_chunk(parts[2])
+                return
+            if len(parts) == 4 and parts[:2] == ["api", "recording-sessions"] and parts[3] == "finalize":
+                self._finalize_recording_session(parts[2])
                 return
             if path == "/api/speakers/enroll":
                 self._enroll_speaker(parsed)
@@ -457,6 +683,38 @@ class RequestHandler(BaseHTTPRequestHandler):
         mime_type = normalize_media_type(self.headers.get("Content-Type"), filename)
         retain_audio = self.server.audio_settings()["retain_recordings"]
         job = self.server.jobs.submit(audio_path, filename, mime_type, retain_audio)
+        self._json(job, 202)
+
+    def _create_recording_session(self) -> None:
+        payload = self._read_json()
+        source_name = str(payload.get("source_name", "Live recording")).strip()[:180] or "Live recording"
+        mime_type = normalize_media_type(str(payload.get("mime_type", "")), source_name)
+        retain_audio = self.server.audio_settings()["retain_recordings"]
+        self._json(self.server.recordings.create(source_name, mime_type, retain_audio), 201)
+
+    def _add_recording_chunk(self, session_id: str) -> None:
+        filename, body = self._read_upload()
+        try:
+            index = int(self.headers.get("X-Chunk-Index", "-1"))
+            start = float(self.headers.get("X-Chunk-Start-Ms", "-1")) / 1000
+            end = float(self.headers.get("X-Chunk-End-Ms", "-1")) / 1000
+        except ValueError as exc:
+            raise ValueError("Invalid recording batch metadata") from exc
+        audio_path = self.server.store.save_upload(filename, body)
+        session = self.server.recordings.add_chunk(session_id, index, audio_path, start, end)
+        self._json(session, 202)
+
+    def _finalize_recording_session(self, session_id: str) -> None:
+        filename, body = self._read_upload()
+        try:
+            duration = float(self.headers.get("X-Recording-Duration-Ms", "0")) / 1000
+        except ValueError as exc:
+            raise ValueError("Invalid recording duration") from exc
+        if duration <= 0:
+            raise ValueError("Invalid recording duration")
+        audio_path = self.server.store.save_upload(filename, body)
+        mime_type = normalize_media_type(self.headers.get("Content-Type"), filename)
+        job = self.server.recordings.finalize(session_id, audio_path, filename, mime_type, duration)
         self._json(job, 202)
 
     def _enroll_speaker(self, parsed: urllib.parse.ParseResult) -> None:

@@ -25,12 +25,24 @@ const state = {
   meterFrame: null,
   analyser: null,
   cancelled: false,
+  recordingFilename: "",
+  recordingSessionId: null,
+  batchRecorder: null,
+  batchRecorders: new Set(),
+  batchUploads: [],
+  batchIndex: 0,
+  nextBatchAt: 0,
+  processedBatches: 0,
+  streamingFailed: false,
+  sessionPollTimer: null,
   micDeviceId: "",
   captureReturnHash: "",
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+const RECORDING_BATCH_MS = 30000;
+const RECORDING_BATCH_OVERLAP_MS = 1500;
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
@@ -634,6 +646,8 @@ function updateAudioSourceUI() {
       state.audioSources.device ? "Device audio on" : "Device audio off",
     ];
     $("#record-subtitle").textContent = sources.join(" · ");
+  } else if (state.recordingSessionId && !state.streamingFailed) {
+    $("#record-subtitle").textContent = `${state.processedBatches} batch${state.processedBatches === 1 ? "" : "es"} processed while recording`;
   }
 }
 
@@ -663,7 +677,10 @@ function updateRecordingUI() {
   status.hidden = !active;
   status?.classList.toggle("is-recording", active && !paused);
   status?.classList.toggle("is-paused", Boolean(paused));
-  $("#recording-status-label").textContent = paused ? "Recording paused" : active ? "Recording" : "Ready to record";
+  const batchStatus = state.recordingSessionId && !state.streamingFailed
+    ? ` · ${state.processedBatches} batch${state.processedBatches === 1 ? "" : "es"} processed`
+    : "";
+  $("#recording-status-label").textContent = paused ? `Recording paused${batchStatus}` : active ? `Recording${batchStatus}` : "Ready to record";
   $("#recording-time").textContent = formatTimestamp(recordingElapsed());
   $("#recording-time").setAttribute("datetime", `PT${Math.floor(recordingElapsed())}S`);
   $(".pause-control").disabled = !active;
@@ -823,6 +840,115 @@ async function cleanupRecordingAudio() {
   state.audioContext = null;
 }
 
+async function createRecordingSession(filename, mimeType) {
+  try {
+    const session = await api("/api/recording-sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_name: filename, mime_type: mimeType }),
+    });
+    state.recordingSessionId = session.id;
+    state.streamingFailed = false;
+    state.sessionPollTimer = setInterval(refreshRecordingSession, 2500);
+  } catch {
+    state.recordingSessionId = null;
+    state.streamingFailed = true;
+  }
+}
+
+async function refreshRecordingSession() {
+  if (!state.recordingSessionId || state.streamingFailed) return;
+  try {
+    const session = await api(`/api/recording-sessions/${encodeURIComponent(state.recordingSessionId)}`);
+    state.processedBatches = Number(session.processed_chunks || 0);
+    updateAudioSourceUI();
+  } catch {
+    state.streamingFailed = true;
+  }
+}
+
+function startBatchRecorder(startSeconds) {
+  if (!state.recordingSessionId || state.streamingFailed || !state.stream) return null;
+  try {
+    const mimeType = state.recorder?.mimeType || "audio/webm";
+    const recorder = new MediaRecorder(state.stream, mimeType ? { mimeType } : undefined);
+    const chunks = [];
+    const index = state.batchIndex++;
+    let resolveUpload;
+    const uploadFinished = new Promise((resolve) => { resolveUpload = resolve; });
+    recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    recorder.onerror = () => { state.streamingFailed = true; };
+    recorder.onstop = async () => {
+      state.batchRecorders.delete(recorder);
+      const endSeconds = recordingElapsed();
+      const blob = new Blob(chunks, { type: recorder.mimeType || mimeType });
+      if (!state.cancelled && blob.size && state.recordingSessionId && !state.streamingFailed) {
+        try {
+          const extension = blob.type.includes("mp4") ? "m4a" : "webm";
+          await api(`/api/recording-sessions/${encodeURIComponent(state.recordingSessionId)}/chunks`, {
+            method: "POST",
+            headers: {
+              "Content-Type": blob.type || "application/octet-stream",
+              "X-Filename": encodeURIComponent(`batch-${String(index).padStart(4, "0")}.${extension}`),
+              "X-Chunk-Index": String(index),
+              "X-Chunk-Start-Ms": String(Math.round(startSeconds * 1000)),
+              "X-Chunk-End-Ms": String(Math.round(endSeconds * 1000)),
+            },
+            body: blob,
+          });
+        } catch {
+          state.streamingFailed = true;
+        }
+      }
+      resolveUpload();
+    };
+    recorder.start(1000);
+    state.batchUploads.push(uploadFinished);
+    state.batchRecorders.add(recorder);
+    state.batchRecorder = recorder;
+    return recorder;
+  } catch {
+    state.streamingFailed = true;
+    return null;
+  }
+}
+
+function rotateBatchRecorder() {
+  if (!state.recording || state.recorder?.state !== "recording" || state.streamingFailed) return;
+  const previous = state.batchRecorder;
+  const next = startBatchRecorder(recordingElapsed());
+  if (!next) return;
+  setTimeout(() => {
+    if (previous && previous.state !== "inactive") previous.stop();
+  }, RECORDING_BATCH_OVERLAP_MS);
+}
+
+async function stopBatchRecorders() {
+  if (state.sessionPollTimer) clearInterval(state.sessionPollTimer);
+  state.sessionPollTimer = null;
+  for (const recorder of [...state.batchRecorders]) {
+    if (recorder.state !== "inactive") recorder.stop();
+  }
+  await Promise.allSettled(state.batchUploads);
+}
+
+async function cancelRecordingSession() {
+  if (!state.recordingSessionId) return;
+  try { await api(`/api/recording-sessions/${encodeURIComponent(state.recordingSessionId)}`, { method: "DELETE" }); } catch {}
+}
+
+function resetRecordingSessionState() {
+  state.recordingSessionId = null;
+  state.batchRecorder = null;
+  state.batchRecorders = new Set();
+  state.batchUploads = [];
+  state.batchIndex = 0;
+  state.nextBatchAt = 0;
+  state.processedBatches = 0;
+  state.streamingFailed = false;
+  state.recordingFilename = "";
+}
+
 async function beginRecording() {
   if (state.recording) {
     if (state.recorder?.state !== "inactive") state.recorder.stop();
@@ -847,13 +973,22 @@ async function beginRecording() {
     state.stream = state.mixDestination.stream;
     const preferred = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find((type) => window.MediaRecorder?.isTypeSupported(type));
     state.recorder = new MediaRecorder(state.stream, preferred ? { mimeType: preferred } : undefined);
+    const extension = state.recorder.mimeType.includes("mp4") ? "m4a" : "webm";
+    state.recordingFilename = `Meeting-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-")}.${extension}`;
     state.chunks = [];
     state.cancelled = false;
+    state.batchRecorders = new Set();
+    state.batchUploads = [];
+    state.batchIndex = 0;
+    state.processedBatches = 0;
+    await createRecordingSession(state.recordingFilename, state.recorder.mimeType || preferred || "audio/webm");
     state.recorder.ondataavailable = (event) => { if (event.data.size) state.chunks.push(event.data); };
     state.recorder.onstop = async () => {
       clearInterval(state.recordTimer);
       const blob = new Blob(state.chunks, { type: state.recorder.mimeType || "audio/webm" });
       const cancelled = state.cancelled;
+      const duration = recordingElapsed();
+      await stopBatchRecorders();
       state.recording = false;
       setModal("#cancel-confirm-modal", false);
       await cleanupRecordingAudio();
@@ -865,21 +1000,35 @@ async function beginRecording() {
       updateAudioSourceUI();
       if (cancelled) {
         state.chunks = [];
+        await cancelRecordingSession();
+        resetRecordingSessionState();
         closeCapture();
         toast("Recording discarded");
         return;
       }
       setModal("#capture-modal", false);
-      await uploadRecording(blob, `Meeting-${new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-")}.${blob.type.includes("mp4") ? "m4a" : "webm"}`);
+      if (state.recordingSessionId && !state.streamingFailed && state.batchUploads.length) {
+        await finalizeRecordingSession(blob, state.recordingFilename, duration);
+      } else {
+        await cancelRecordingSession();
+        await uploadRecording(blob, state.recordingFilename);
+      }
+      resetRecordingSessionState();
     };
     state.recorder.start(1000);
     state.recording = true;
     state.recordStarted = Date.now();
     state.pausedStarted = 0;
     state.totalPaused = 0;
+    state.nextBatchAt = RECORDING_BATCH_MS / 1000;
+    if (state.recordingSessionId) startBatchRecorder(0);
     startAudioMeter();
     updateRecordingUI();
     state.recordTimer = setInterval(() => {
+      if (recordingElapsed() >= state.nextBatchAt && state.recorder?.state === "recording") {
+        rotateBatchRecorder();
+        state.nextBatchAt += RECORDING_BATCH_MS / 1000;
+      }
       updateRecordingUI();
     }, 250);
   } catch (error) {
@@ -894,12 +1043,14 @@ function pauseRecording() {
   if (!state.recording || !state.recorder) return;
   if (state.recorder.state === "recording") {
     state.recorder.pause();
+    for (const recorder of state.batchRecorders) if (recorder.state === "recording") recorder.pause();
     state.pausedStarted = Date.now();
     state.audioContext?.suspend();
   } else if (state.recorder.state === "paused") {
     state.totalPaused += Date.now() - state.pausedStarted;
     state.pausedStarted = 0;
     state.recorder.resume();
+    for (const recorder of state.batchRecorders) if (recorder.state === "paused") recorder.resume();
     state.audioContext?.resume();
   }
   updateRecordingUI();
@@ -926,6 +1077,26 @@ async function uploadRecording(blob, filename) {
   updateProgress("Saving recording locally", 4);
   try {
     const job = await api("/api/meetings/process", { method: "POST", headers: { "Content-Type": blob.type || "application/octet-stream", "X-Filename": encodeURIComponent(filename) }, body: blob });
+    await pollJob(job.id);
+  } catch (error) {
+    setModal("#process-modal", false);
+    toast(error.message, "error");
+  }
+}
+
+async function finalizeRecordingSession(blob, filename, duration) {
+  setModal("#process-modal", true);
+  updateProgress("Reconciling batches captured during the meeting", 62);
+  try {
+    const job = await api(`/api/recording-sessions/${encodeURIComponent(state.recordingSessionId)}/finalize`, {
+      method: "POST",
+      headers: {
+        "Content-Type": blob.type || "application/octet-stream",
+        "X-Filename": encodeURIComponent(filename),
+        "X-Recording-Duration-Ms": String(Math.round(duration * 1000)),
+      },
+      body: blob,
+    });
     await pollJob(job.id);
   } catch (error) {
     setModal("#process-modal", false);
