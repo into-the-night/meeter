@@ -41,7 +41,9 @@ const state = {
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-const RECORDING_BATCH_MS = 30000;
+// Longer independently decodable batches amortize diarization, decoding, upload,
+// and generation setup while preserving a small boundary overlap.
+const RECORDING_BATCH_MS = 75000;
 const RECORDING_BATCH_OVERLAP_MS = 1500;
 
 function escapeHtml(value) {
@@ -1112,11 +1114,23 @@ function updateProgress(step, progress) {
 }
 
 async function pollJob(id) {
+  localStorage.setItem("meeter.activeJobId", id);
+  let consecutiveFailures = 0;
   while (true) {
     await new Promise((resolve) => setTimeout(resolve, 700));
-    const job = await api(`/api/jobs/${encodeURIComponent(id)}`);
+    let job;
+    try {
+      job = await api(`/api/jobs/${encodeURIComponent(id)}`);
+      consecutiveFailures = 0;
+    } catch (error) {
+      consecutiveFailures += 1;
+      updateProgress("Connection interrupted; processing continues locally", 0);
+      if (consecutiveFailures < 30) continue;
+      throw error;
+    }
     updateProgress(job.step, job.progress || 0);
     if (job.state === "complete") {
+      localStorage.removeItem("meeter.activeJobId");
       setModal("#process-modal", false);
       await refreshMeetings();
       await openMeeting(job.meeting_id);
@@ -1128,6 +1142,10 @@ async function pollJob(id) {
       toast(job.error || "Processing failed", "error");
       if (job.code === "MODEL_NOT_READY") showSettings();
       return;
+    }
+    if (job.state === "error") {
+      localStorage.removeItem("meeter.activeJobId");
+      throw new Error(job.error || "Meeting processing failed");
     }
   }
 }
@@ -1491,6 +1509,16 @@ async function init() {
     if (linkedView === "library") showLibrary();
     if (linkedView === "actions") await showActions();
     if (linkedView === "record") openCapture();
+    const activeJobId = localStorage.getItem("meeter.activeJobId");
+    if (/^job_[a-z0-9]+$/i.test(activeJobId || "")) {
+      setModal("#process-modal", true);
+      updateProgress("Reconnecting to local processing", 2);
+      pollJob(activeJobId).catch((error) => {
+        localStorage.removeItem("meeter.activeJobId");
+        setModal("#process-modal", false);
+        toast(error.message, "error");
+      });
+    }
   } catch (error) { toast(`Local service unavailable: ${error.message}`, "error"); }
 }
 

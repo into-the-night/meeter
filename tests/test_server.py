@@ -43,6 +43,13 @@ class ServerTests(unittest.TestCase):
         status, index = self.request_json("/api/meetings")
         self.assertEqual(index["meetings"][0]["id"], meeting["id"])
 
+    def test_interrupted_job_is_visible_after_restart(self):
+        self.server.store.save_job({"id": "job_abcd1234", "state": "processing", "step": "Transcribing", "progress": 31})
+        manager = JobManager(self.server.pipeline)
+        job = manager.get("job_abcd1234")
+        self.assertEqual(job["state"], "error")
+        self.assertEqual(job["code"], "PROCESS_INTERRUPTED")
+
     def test_static_response_has_security_policy(self):
         with urllib.request.urlopen(self.base + "/", timeout=3) as response:
             self.assertEqual(response.status, 200)

@@ -14,6 +14,14 @@ class ModelNotReady(RuntimeError):
     pass
 
 
+def decode_audio_samples(audio_path: Path, sample_rate: int = 16000) -> Any:
+    try:
+        from faster_whisper.audio import decode_audio
+    except ImportError as exc:
+        raise ModelNotReady("Install the approved faster-whisper package") from exc
+    return decode_audio(str(audio_path), sampling_rate=sample_rate)
+
+
 def _approved_path(env_name: str) -> Path:
     raw = os.environ.get(env_name, "").strip()
     if not raw:
@@ -35,7 +43,7 @@ class WhisperAdapter:
     def __init__(self) -> None:
         self._model: Any = None
 
-    def transcribe(self, audio_path: Path) -> tuple[list[dict[str, Any]], str, float]:
+    def warmup(self) -> None:
         model_path = _approved_path("MEETER_WHISPER_MODEL")
         try:
             from faster_whisper import WhisperModel
@@ -45,6 +53,9 @@ class WhisperAdapter:
             device = os.environ.get("MEETER_WHISPER_DEVICE", "cpu")
             compute = os.environ.get("MEETER_WHISPER_COMPUTE", "int8" if device == "cpu" else "float16")
             self._model = WhisperModel(str(model_path), device=device, compute_type=compute, local_files_only=True)
+
+    def transcribe(self, audio_path: Path) -> tuple[list[dict[str, Any]], str, float]:
+        self.warmup()
         segments, info = self._model.transcribe(
             str(audio_path),
             beam_size=5,
@@ -139,15 +150,16 @@ class QwenASRAdapter:
         audio_path: Path,
         diarization: list[DiarizationTurn],
         progress: Callable[[int, int], None] | None = None,
+        samples: Any = None,
+        sample_rate: int = 16000,
     ) -> tuple[list[dict[str, Any]], str, float]:
         try:
             import numpy as np
-            from faster_whisper.audio import decode_audio
         except ImportError as exc:
-            raise ModelNotReady("Install the approved numpy and faster-whisper packages") from exc
+            raise ModelNotReady("Install the approved numpy package") from exc
 
-        sample_rate = 16000
-        samples = decode_audio(str(audio_path), sampling_rate=sample_rate)
+        if samples is None:
+            samples = decode_audio_samples(audio_path, sample_rate)
         duration = len(samples) / sample_rate
         turns = self._merge_turns(diarization)
         if not turns and duration > 0:
@@ -219,10 +231,10 @@ class DiarizationAdapter:
     def __init__(self) -> None:
         self._pipeline: Any = None
 
-    def diarize(self, audio_path: Path) -> list[DiarizationTurn]:
+    def diarize(self, audio_path: Path, samples: Any = None, sample_rate: int = 16000) -> list[DiarizationTurn]:
         model_path = _approved_path("MEETER_DIARIZATION_MODEL")
         if model_path.suffix == ".onnx":
-            return self._diarize_sherpa(audio_path, model_path)
+            return self._diarize_sherpa(audio_path, model_path, samples, sample_rate)
         try:
             from pyannote.audio import Pipeline
         except ImportError as exc:
@@ -232,12 +244,11 @@ class DiarizationAdapter:
         result = self._pipeline(str(audio_path))
         return [DiarizationTurn(float(turn.start), float(turn.end), str(label)) for turn, _, label in result.itertracks(yield_label=True)]
 
-    def _diarize_sherpa(self, audio_path: Path, model_path: Path) -> list[DiarizationTurn]:
+    def _load_sherpa(self, model_path: Path) -> None:
         try:
             import sherpa_onnx
-            from faster_whisper.audio import decode_audio
         except ImportError as exc:
-            raise ModelNotReady("Install the approved sherpa-onnx and faster-whisper packages") from exc
+            raise ModelNotReady("Install the approved sherpa-onnx package") from exc
         embedding_path = _approved_path("MEETER_EMBEDDING_MODEL")
         if self._pipeline is None:
             config = sherpa_onnx.OfflineSpeakerDiarizationConfig(
@@ -259,7 +270,16 @@ class DiarizationAdapter:
             if not config.validate():
                 raise ModelNotReady("The configured sherpa-onnx diarization models are invalid")
             self._pipeline = sherpa_onnx.OfflineSpeakerDiarization(config)
-        samples = decode_audio(str(audio_path), sampling_rate=self._pipeline.sample_rate)
+
+    def warmup(self) -> None:
+        model_path = _approved_path("MEETER_DIARIZATION_MODEL")
+        if model_path.suffix == ".onnx":
+            self._load_sherpa(model_path)
+
+    def _diarize_sherpa(self, audio_path: Path, model_path: Path, samples: Any = None, sample_rate: int = 16000) -> list[DiarizationTurn]:
+        self._load_sherpa(model_path)
+        if samples is None or sample_rate != self._pipeline.sample_rate:
+            samples = decode_audio_samples(audio_path, self._pipeline.sample_rate)
         result = self._pipeline.process(samples).sort_by_start_time()
         return [DiarizationTurn(float(turn.start), float(turn.end), f"SPEAKER_{int(turn.speaker):02d}") for turn in result]
 
@@ -305,10 +325,10 @@ class EmbeddingAdapter:
         vector = self._inference(str(audio_path))
         return [float(value) for value in vector.reshape(-1)]
 
-    def embed_clusters(self, audio_path: Path, turns: list[DiarizationTurn]) -> dict[str, list[float]]:
+    def embed_clusters(self, audio_path: Path, turns: list[DiarizationTurn], samples: Any = None, sample_rate: int = 16000) -> dict[str, list[float]]:
         self._load()
         if self._is_sherpa():
-            return self._sherpa_cluster_embeddings(audio_path, turns)
+            return self._sherpa_cluster_embeddings(audio_path, turns, samples, sample_rate)
         try:
             import numpy as np
             from pyannote.core import Segment
@@ -330,14 +350,13 @@ class EmbeddingAdapter:
             raise ModelNotReady("The voice sample is too short for speaker recognition")
         return [float(value) for value in self._inference.compute(stream)]
 
-    def _sherpa_cluster_embeddings(self, audio_path: Path, turns: list[DiarizationTurn]) -> dict[str, list[float]]:
+    def _sherpa_cluster_embeddings(self, audio_path: Path, turns: list[DiarizationTurn], samples: Any = None, sample_rate: int = 16000) -> dict[str, list[float]]:
         try:
             import numpy as np
-            from faster_whisper.audio import decode_audio
         except ImportError as exc:
-            raise ModelNotReady("Install the approved numpy and faster-whisper packages") from exc
-        sample_rate = 16000
-        samples = decode_audio(str(audio_path), sampling_rate=sample_rate)
+            raise ModelNotReady("Install the approved numpy package") from exc
+        if samples is None:
+            samples = decode_audio_samples(audio_path, sample_rate)
         grouped: dict[str, list[Any]] = defaultdict(list)
         for turn in turns:
             start = max(0, int(turn.start * sample_rate))
@@ -361,6 +380,23 @@ class LlamaCppAdapter:
     def configured(self) -> bool:
         return bool(os.environ.get(self.model_env, "").strip())
 
+    def warmup(self) -> None:
+        if not self.configured or self._model is not None:
+            return
+        model_path = _approved_path(self.model_env)
+        try:
+            from llama_cpp import Llama
+        except ImportError as exc:
+            raise ModelNotReady("Install the approved llama-cpp-python package") from exc
+        self._model = Llama(
+            model_path=str(model_path),
+            n_ctx=int(os.environ.get("MEETER_LLM_CONTEXT", "8192")),
+            n_threads=max(2, (os.cpu_count() or 4) - 1),
+            n_gpu_layers=int(os.environ.get("MEETER_LLM_GPU_LAYERS", "-1" if platform.system() == "Darwin" else "0")),
+            n_batch=int(os.environ.get("MEETER_LLM_BATCH", "512")),
+            verbose=False,
+        )
+
     def __call__(self, prompt: str) -> str:
         model_path = _approved_path(self.model_env)
         try:
@@ -368,14 +404,7 @@ class LlamaCppAdapter:
         except ImportError as exc:
             raise ModelNotReady("Install the approved llama-cpp-python package") from exc
         if self._model is None:
-            self._model = Llama(
-                model_path=str(model_path),
-                n_ctx=int(os.environ.get("MEETER_LLM_CONTEXT", "8192")),
-                n_threads=max(2, (os.cpu_count() or 4) - 1),
-                n_gpu_layers=int(os.environ.get("MEETER_LLM_GPU_LAYERS", "-1" if platform.system() == "Darwin" else "0")),
-                n_batch=int(os.environ.get("MEETER_LLM_BATCH", "512")),
-                verbose=False,
-            )
+            self.warmup()
         string_or_null = {"anyOf": [{"type": "string"}, {"type": "null"}]}
         response_schema = {
             "type": "object",

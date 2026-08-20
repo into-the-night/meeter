@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from meeter.local_models import DiarizationTurn, QwenASRAdapter
 from meeter.pipeline import _deduplicate_chunk_rows, aggregate_languages, assign_diarization, cluster_voice_embeddings, recognize_clusters, reconcile_chunk_clusters, select_voice_snippets
@@ -60,6 +61,10 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(QwenASRAdapter._batch_size("mps"), 2)
         self.assertEqual(QwenASRAdapter._batch_size("cuda:0"), 8)
         self.assertEqual(QwenASRAdapter._batch_size("cpu"), 1)
+
+    def test_qwen_batch_size_can_be_tuned_after_measurement(self):
+        with patch.dict("os.environ", {"MEETER_ASR_BATCH_SIZE": "4"}):
+            self.assertEqual(QwenASRAdapter._batch_size("mps"), 4)
 
     def test_assigns_speaker_by_maximum_overlap(self):
         segments = [

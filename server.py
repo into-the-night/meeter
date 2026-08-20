@@ -7,6 +7,7 @@ import mimetypes
 import os
 import queue
 import threading
+import time
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -53,11 +54,19 @@ class JobManager:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         self.model_lock = threading.RLock()
+        for job in self.pipeline.store.recover_jobs():
+            self._jobs[str(job["id"])] = job
+
+    def _update(self, job_id: str, values: dict[str, Any]) -> None:
+        with self._lock:
+            self._jobs[job_id].update(values)
+            self.pipeline.store.save_job(self._jobs[job_id])
 
     def submit(self, audio_path: Path, source_name: str, mime_type: str, retain_audio: bool) -> dict[str, Any]:
         job_id = f"job_{uuid4().hex[:12]}"
         with self._lock:
-            self._jobs[job_id] = {"id": job_id, "state": "queued", "step": "Preparing", "progress": 2}
+            self._jobs[job_id] = {"id": job_id, "state": "queued", "step": "Preparing", "progress": 2, "created_at": time.time()}
+            self.pipeline.store.save_job(self._jobs[job_id])
         threading.Thread(
             target=self._run,
             args=(job_id, audio_path, source_name, mime_type, retain_audio),
@@ -76,7 +85,8 @@ class JobManager:
     ) -> dict[str, Any]:
         job_id = f"job_{uuid4().hex[:12]}"
         with self._lock:
-            self._jobs[job_id] = {"id": job_id, "state": "queued", "step": "Finishing queued batches", "progress": 62}
+            self._jobs[job_id] = {"id": job_id, "state": "queued", "step": "Finishing queued batches", "progress": 62, "created_at": time.time()}
+            self.pipeline.store.save_job(self._jobs[job_id])
         threading.Thread(
             target=self._run_stream,
             args=(job_id, audio_path, source_name, mime_type, retain_audio, duration, chunk_results),
@@ -86,8 +96,7 @@ class JobManager:
 
     def _run(self, job_id: str, audio_path: Path, source_name: str, mime_type: str, retain_audio: bool) -> None:
         def update(step: str, progress: int) -> None:
-            with self._lock:
-                self._jobs[job_id].update({"state": "processing", "step": step, "progress": progress})
+            self._update(job_id, {"state": "processing", "step": step, "progress": progress, "updated_at": time.time()})
 
         def build() -> dict[str, Any]:
             with self.model_lock:
@@ -106,8 +115,7 @@ class JobManager:
         chunk_results: Callable[[], list[dict[str, Any]] | None],
     ) -> None:
         def update(step: str, progress: int) -> None:
-            with self._lock:
-                self._jobs[job_id].update({"state": "processing", "step": step, "progress": progress})
+            self._update(job_id, {"state": "processing", "step": step, "progress": progress, "updated_at": time.time()})
 
         def build() -> dict[str, Any]:
             chunks = chunk_results()
@@ -139,22 +147,19 @@ class JobManager:
             else:
                 meeting["audio"] = None
             self.pipeline.store.save_meeting(meeting)
-            with self._lock:
-                self._jobs[job_id].update({"state": "complete", "step": "Ready", "progress": 100, "meeting_id": meeting_id})
+            self._update(job_id, {"state": "complete", "step": "Ready", "progress": 100, "meeting_id": meeting_id, "timings": meeting.get("processing", {}), "updated_at": time.time()})
         except ModelNotReady as exc:
-            with self._lock:
-                self._jobs[job_id].update({"state": "error", "code": "MODEL_NOT_READY", "error": str(exc), "step": "Setup needed"})
+            self._update(job_id, {"state": "error", "code": "MODEL_NOT_READY", "error": str(exc), "step": "Setup needed", "updated_at": time.time()})
         except Exception as exc:  # keeps details local and avoids killing the HTTP worker
             if promoted_audio and meeting_id:
                 self.pipeline.store.delete_meeting_audio(meeting_id)
-            with self._lock:
-                self._jobs[job_id].update({"state": "error", "code": "PROCESSING_FAILED", "error": str(exc), "step": "Processing failed"})
+            self._update(job_id, {"state": "error", "code": "PROCESSING_FAILED", "error": str(exc), "step": "Processing failed", "updated_at": time.time()})
         finally:
             audio_path.unlink(missing_ok=True)
 
     def get(self, job_id: str) -> dict[str, Any] | None:
         with self._lock:
-            job = self._jobs.get(job_id)
+            job = self._jobs.get(job_id) or self.pipeline.store.get_job(job_id)
             return dict(job) if job else None
 
 
@@ -312,9 +317,17 @@ class MeeterServer(ThreadingHTTPServer):
         self.jobs = JobManager(self.pipeline)
         self.recordings = RecordingSessionManager(self.pipeline, self.jobs)
         super().__init__(address, RequestHandler)
+        threading.Thread(target=self._warm_models, name="meeter-model-warmup", daemon=True).start()
         self.mcp = McpServiceManager(store.root, self.mcp_settings, int(os.environ.get("MEETER_MCP_PORT", "4318")))
         if start_mcp and self.mcp_settings()["enabled"]:
             self.mcp.start_async()
+
+    def _warm_models(self) -> None:
+        try:
+            with self.jobs.model_lock:
+                self.pipeline.warmup()
+        except Exception as exc:
+            print(f"[warmup] {exc}")
 
     def server_close(self) -> None:
         if hasattr(self, "mcp"):
@@ -395,7 +408,10 @@ class RequestHandler(BaseHTTPRequestHandler):
     def _json(self, value: Any, status: int = 200) -> None:
         body = json.dumps(value, ensure_ascii=False).encode("utf-8")
         self._begin(status, "application/json; charset=utf-8", len(body))
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _read_json(self, max_bytes: int = 1024 * 1024) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))

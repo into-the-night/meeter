@@ -48,9 +48,11 @@ class LocalStore:
         self.root = (root or default_data_dir()).resolve()
         self.meetings_dir = self.root / "meetings"
         self.audio_dir = self.root / "audio"
+        self.jobs_dir = self.root / "jobs"
         self._lock = RLock()
         self.meetings_dir.mkdir(parents=True, exist_ok=True)
         self.audio_dir.mkdir(parents=True, exist_ok=True)
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
 
     def _atomic_json(self, path: Path, value: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +138,45 @@ class LocalStore:
         target = self.audio_dir / f"{next(tempfile._get_candidate_names())}_{safe_name}"
         target.write_bytes(body)
         return target
+
+    def save_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        job_id = str(job.get("id", ""))
+        if not job_id.startswith("job_") or not job_id.replace("_", "").isalnum():
+            raise ValueError("Invalid job id")
+        with self._lock:
+            self._atomic_json(self.jobs_dir / f"{job_id}.json", job)
+        return job
+
+    def get_job(self, job_id: str) -> dict[str, Any] | None:
+        if not job_id.startswith("job_") or not job_id.replace("_", "").isalnum():
+            return None
+        path = self.jobs_dir / f"{job_id}.json"
+        if not path.is_file():
+            return None
+        try:
+            with self._lock, path.open(encoding="utf-8") as handle:
+                value = json.load(handle)
+            return value if isinstance(value, dict) else None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def recover_jobs(self) -> list[dict[str, Any]]:
+        """Make jobs abandoned by a previous app process visible and actionable."""
+        recovered: list[dict[str, Any]] = []
+        for path in self.jobs_dir.glob("job_*.json"):
+            job = self.get_job(path.stem)
+            if not job:
+                continue
+            if job.get("state") in {"queued", "processing"}:
+                job.update({
+                    "state": "error",
+                    "code": "PROCESS_INTERRUPTED",
+                    "step": "Processing interrupted",
+                    "error": "The Meeter process stopped while this job was running. Re-import the recording to retry.",
+                })
+                self.save_job(job)
+            recovered.append(job)
+        return recovered
 
     def meeting_audio_path(self, meeting_id: str) -> Path | None:
         if not self._valid_meeting_id(meeting_id):

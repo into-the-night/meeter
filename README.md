@@ -7,7 +7,7 @@ It ships with a polished zero-dependency demo mode. For real audio processing, p
 ## What it does
 
 - Records microphone and shared device/tab audio from the browser, with independent live source toggles, or imports common audio/video files.
-- Processes live recordings in overlapping 30-second batches while capture continues; stopping normally requires only reconciliation, with automatic full-recording fallback if a batch fails.
+- Processes live recordings in overlapping 75-second batches while capture continues; stopping normally requires only reconciliation, with automatic full-recording fallback if a batch fails.
 - Transcribes diarized speaker batches with local Qwen3-ASR-1.7B on Apple Silicon or CUDA. A `faster-whisper` backend remains available for managed legacy installs.
 - Handles Hindi–English code-switching, including Devanagari and Romanized Hindi, while preserving English names and technical terms.
 - Diarizes with local sherpa-onnx models, recognizes enrolled voices, and labels every unmatched voice as a stable unknown speaker.
@@ -19,9 +19,11 @@ Original meeting audio is retained locally by default so transcript timestamps c
 
 Device audio availability depends on the browser and operating system. When it is enabled, choose a browser tab or screen in the share picker and turn on its **Share audio** option. Tab audio is the most consistently supported choice.
 
-Live batching uses independent overlapping `MediaRecorder` instances because browser `timeslice` fragments are not guaranteed to be independently decodable. A continuous recorder is kept as the retained playback source and safety fallback. Model inference is intentionally serialized—recording and inference run in parallel, but multiple local model calls do not compete for the same GPU memory.
+Live batching uses independent overlapping `MediaRecorder` instances because browser `timeslice` fragments are not guaranteed to be independently decodable. A continuous recorder is kept as the retained playback source and safety fallback. Model inference is intentionally serialized—recording and inference run in parallel, but multiple local model calls do not compete for the same GPU memory. Job status is persisted under the local data directory, so a disconnected browser poll does not drop work and an app restart reports an interrupted job explicitly.
 
 On Apple Silicon, Qwen ASR automatically uses PyTorch MPS and the summary model uses llama.cpp Metal offload. MPS inference is intentionally serialized: concurrent generations contend for the same unified memory and normally run slower. CPU diarization, browser capture, uploads, and storage continue independently. The default MPS ASR batch is two duration-sorted turns to avoid padding every turn in a batch to its longest clip; tune `MEETER_ASR_BATCH_SIZE` only after measuring your machine.
+
+To compare MPS batch sizes without changing models or decoding settings, source `local.env` and run `./.venv/bin/python benchmark_asr_batches.py /path/to/representative-audio.webm`. It reports elapsed time, real-time factor, turn count, and word count for sizes 2, 3, and 4.
 
 ## Installed quick start
 

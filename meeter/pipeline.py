@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Callable
 
 from .domain import ActionItem, Meeting, TranscriptTurn
-from .local_models import DiarizationAdapter, DiarizationTurn, EmbeddingAdapter, LlamaCppAdapter, ModelNotReady, QwenASRAdapter, WhisperAdapter, cosine_similarity
+from .local_models import DiarizationAdapter, DiarizationTurn, EmbeddingAdapter, LlamaCppAdapter, ModelNotReady, QwenASRAdapter, WhisperAdapter, cosine_similarity, decode_audio_samples
 from .storage import LocalStore
 from .summarizer import summarize
 
@@ -238,6 +239,27 @@ class MeetingPipeline:
         self.llm = LlamaCppAdapter()
         self.batch_llm = LlamaCppAdapter("MEETER_LLM_BATCH_MODEL", max_tokens=900)
 
+    def warmup(self) -> None:
+        """Load configured model weights before the first recording reaches the queue."""
+        loaders = []
+        if self.asr_backend == "qwen3":
+            loaders.append(("asr", self.qwen_asr._load))
+        else:
+            loaders.append(("asr", self.whisper.warmup))
+        loaders.extend([
+            ("diarization", self.diarizer.warmup),
+            ("embeddings", self.embedder._load),
+            ("summary", self.llm.warmup),
+            ("batch_summary", self.batch_llm.warmup),
+        ])
+        for name, load in loaders:
+            started = time.perf_counter()
+            try:
+                load()
+                print(f"[warmup] {name}: {time.perf_counter() - started:.3f}s")
+            except ModelNotReady as exc:
+                print(f"[warmup] {name}: skipped ({exc})")
+
     def readiness(self) -> dict[str, Any]:
         keys = {
             "transcription": "MEETER_QWEN_ASR_MODEL" if self.asr_backend == "qwen3" else "MEETER_WHISPER_MODEL",
@@ -249,9 +271,17 @@ class MeetingPipeline:
         return {"ready": configured["transcription"] and configured["diarization"], "components": configured, "network": "loopback-only"}
 
     def process(self, audio_path: Path, source_name: str, progress: Progress) -> dict[str, Any]:
+        started = time.perf_counter()
+        timings: dict[str, float] = {}
+        def mark(name: str, since: float) -> float:
+            now = time.perf_counter(); timings[name] = round(now - since, 3); return now
         if self.asr_backend == "qwen3":
+            stage = time.perf_counter()
+            samples = decode_audio_samples(audio_path)
+            stage = mark("decode", stage)
             progress("Separating speakers", 12)
-            diarization = self.diarizer.diarize(audio_path)
+            diarization = self.diarizer.diarize(audio_path, samples)
+            stage = mark("diarization", stage)
             progress("Transcribing local speaker batches", 31)
             rows, language, duration = self.qwen_asr.transcribe_turns(
                 audio_path,
@@ -260,7 +290,9 @@ class MeetingPipeline:
                     f"Transcribing local speaker batches ({completed}/{total})",
                     31 + round(25 * completed / total),
                 ),
+                samples,
             )
+            stage = mark("transcription", stage)
         else:
             progress("Transcribing and separating speakers", 12)
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="meeter-audio") as executor:
@@ -270,14 +302,23 @@ class MeetingPipeline:
                 diarization = diarization_future.result()
             rows = assign_diarization(segments, diarization)
         progress("Recognizing known voices", 61)
+        stage = time.perf_counter()
         profiles = self.store.load_speakers()
         try:
-            embeddings = self.embedder.embed_clusters(audio_path, diarization)
+            embeddings = self.embedder.embed_clusters(audio_path, diarization, samples if self.asr_backend == "qwen3" else None)
         except ModelNotReady:
             embeddings = {}
         rows, participants = recognize_clusters(rows, embeddings, profiles)
         participants = select_voice_snippets(diarization, rows, participants)
-        return self._build_meeting(rows, participants, diarization, duration, language, source_name, progress)
+        mark("speaker_recognition", stage)
+        stage = time.perf_counter()
+        meeting = self._build_meeting(rows, participants, diarization, duration, language, source_name, progress)
+        mark("summarization", stage)
+        timings["total"] = round(time.perf_counter() - started, 3)
+        timings["realtime_factor"] = round(timings["total"] / duration, 3) if duration else None
+        meeting["processing"] = timings
+        print(f"[timing] {source_name}: {timings}")
+        return meeting
 
     def process_stream_chunk(
         self,
@@ -287,9 +328,11 @@ class MeetingPipeline:
         end_seconds: float,
     ) -> dict[str, Any]:
         """Perform the expensive audio work while the rest of the meeting is still recording."""
+        started = time.perf_counter()
+        samples = decode_audio_samples(audio_path) if self.asr_backend == "qwen3" else None
         if self.asr_backend == "qwen3":
-            diarization = self.diarizer.diarize(audio_path)
-            rows, language, decoded_duration = self.qwen_asr.transcribe_turns(audio_path, diarization)
+            diarization = self.diarizer.diarize(audio_path, samples)
+            rows, language, decoded_duration = self.qwen_asr.transcribe_turns(audio_path, diarization, samples=samples)
         else:
             with ThreadPoolExecutor(max_workers=2, thread_name_prefix="meeter-stream") as executor:
                 transcription_future = executor.submit(self.whisper.transcribe, audio_path)
@@ -298,7 +341,7 @@ class MeetingPipeline:
                 diarization = diarization_future.result()
             rows = assign_diarization(segments, diarization)
         try:
-            embeddings = self.embedder.embed_clusters(audio_path, diarization)
+            embeddings = self.embedder.embed_clusters(audio_path, diarization, samples)
         except ModelNotReady:
             embeddings = {}
 
@@ -314,6 +357,7 @@ class MeetingPipeline:
             "rows": rows,
             "embeddings": {prefix + str(label): vector for label, vector in embeddings.items()},
             "language": language,
+            "processing_seconds": round(time.perf_counter() - started, 3),
         }
 
     def finalize_stream_chunks(
@@ -323,6 +367,7 @@ class MeetingPipeline:
         duration: float,
         progress: Progress,
     ) -> dict[str, Any]:
+        started = time.perf_counter()
         progress("Reconciling overlapping batches", 68)
         profiles = self.store.load_speakers()
         rows, embeddings = reconcile_chunk_clusters(chunks, profiles)
@@ -338,7 +383,17 @@ class MeetingPipeline:
             )
             for chunk in chunks
         ])
-        return self._build_meeting(rows, participants, diarization, duration, language, source_name, progress)
+        meeting = self._build_meeting(rows, participants, diarization, duration, language, source_name, progress)
+        batch_seconds = sum(float(chunk.get("processing_seconds", 0)) for chunk in chunks)
+        total = batch_seconds + time.perf_counter() - started
+        meeting["processing"] = {
+            "stream_batches": round(batch_seconds, 3),
+            "finalization": round(time.perf_counter() - started, 3),
+            "total_compute": round(total, 3),
+            "realtime_factor": round(total / duration, 3) if duration else None,
+        }
+        print(f"[timing] {source_name}: {meeting['processing']}")
+        return meeting
 
     def _build_meeting(
         self,
