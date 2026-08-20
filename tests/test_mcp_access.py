@@ -73,6 +73,20 @@ class McpAccessTests(unittest.TestCase):
             insights = service.get_meeting_insights(meeting["id"])
             self.assertNotIn("voice_snippet", insights["meeting"]["participants"][0])
 
+    def test_full_mode_can_query_a_single_speaker_transcript(self):
+        with tempfile.TemporaryDirectory() as directory:
+            meeting = demo_meeting().to_dict()
+            LocalStore(Path(directory)).save_meeting(meeting)
+            service = self.service(directory, PrivacyLevel.FULL)
+
+            result = service.get_speaker_transcript(meeting["id"], "Maya Chen")
+
+            self.assertEqual(result["speaker"], "Maya Chen")
+            self.assertGreater(len(result["transcript"]), 0)
+            self.assertTrue(all(turn["speaker"] == "Maya Chen" for turn in result["transcript"]))
+            with self.assertRaises(PermissionError):
+                self.service(directory).get_speaker_transcript(meeting["id"], "Maya Chen")
+
     def test_allowlist_hides_other_meetings(self):
         with tempfile.TemporaryDirectory() as directory:
             first = demo_meeting().to_dict()

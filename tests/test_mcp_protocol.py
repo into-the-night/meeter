@@ -49,6 +49,7 @@ class McpProtocolTests(unittest.TestCase):
                 self.assertIn("get_transcript_excerpts", excerpt_tools)
                 self.assertNotIn("get_meeting_transcript", excerpt_tools)
                 self.assertIn("get_meeting_transcript", full_tools)
+                self.assertIn("get_speaker_transcript", full_tools)
                 self.assertFalse(result.isError)
                 self.assertNotIn("transcript", result.structuredContent["meeting"])
 

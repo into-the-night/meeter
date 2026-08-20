@@ -139,6 +139,11 @@ def create_mcp_server(service: MeetingContextService, *, host: str = "127.0.0.1"
             """Return the complete text transcript for one permitted meeting."""
             return service.get_meeting_transcript(meeting_id)
 
+        @server.tool()
+        def get_speaker_transcript(meeting_id: str, speaker: str) -> dict[str, Any]:
+            """Return all transcript turns attributed to one named speaker in a permitted meeting."""
+            return service.get_speaker_transcript(meeting_id, speaker)
+
     return server
 
 

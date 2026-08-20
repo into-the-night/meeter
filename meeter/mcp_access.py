@@ -368,3 +368,26 @@ class MeetingContextService:
                 ],
             }
         )
+
+    def get_speaker_transcript(self, meeting_id: str, speaker: str) -> dict[str, Any]:
+        """Return one speaker's turns from a permitted meeting in full-transcript mode."""
+        if self.config.level < PrivacyLevel.FULL:
+            raise PermissionError("Speaker transcript queries require the full MCP privacy level")
+        speaker_name = speaker.strip()
+        if not speaker_name:
+            raise ValueError("Provide a speaker name")
+        meeting = self._get(meeting_id)
+        turns = [
+            self._transcript_turn(turn)
+            for turn in meeting.get("transcript", [])
+            if isinstance(turn, dict)
+            and str(turn.get("speaker", "")).casefold() == speaker_name.casefold()
+        ]
+        return self._finish(
+            {
+                "meeting_id": meeting_id,
+                "title": meeting.get("title", "Untitled meeting"),
+                "speaker": speaker_name,
+                "transcript": turns,
+            }
+        )

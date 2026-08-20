@@ -86,6 +86,9 @@ Privacy is fixed when the process starts, so an AI cannot elevate its own access
   --allowed-meetings meeting_abc123,meeting_def456
 ```
 
+Full-transcript access also enables `get_speaker_transcript(meeting_id, speaker)`, which returns
+only the turns attributed to the requested speaker in a permitted meeting.
+
 Equivalent environment variables are `MEETER_MCP_PRIVACY`, `MEETER_MCP_REDACT_PII`, and
 `MEETER_MCP_ALLOWED_MEETINGS`. `MEETER_DATA_DIR` continues to select Meeter's data directory.
 Do not disable PII redaction or enable transcript access unless the connected client is trusted
