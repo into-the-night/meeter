@@ -659,6 +659,9 @@ class RequestHandler(BaseHTTPRequestHandler):
             if path.endswith("/speaker-name") and path.startswith("/api/meetings/"):
                 self._rename_speaker(path.split("/")[3])
                 return
+            if path.endswith("/merge-speakers") and path.startswith("/api/meetings/"):
+                self._merge_speakers(path.split("/")[3])
+                return
             if path.endswith("/action-state") and path.startswith("/api/meetings/"):
                 self._set_action_state(path.split("/")[3])
                 return
@@ -748,6 +751,39 @@ class RequestHandler(BaseHTTPRequestHandler):
         for action in meeting.get("actions", []):
             if action.get("owner") == old_name:
                 action["owner"] = new_name
+        self.server.store.save_meeting(meeting)
+        self._json(meeting)
+
+    def _merge_speakers(self, meeting_id: str) -> None:
+        payload = self._read_json()
+        source_name = str(payload.get("source_name", "")).strip()
+        target_name = str(payload.get("target_name", "")).strip()
+        if not source_name or not target_name or source_name == target_name:
+            raise ValueError("Choose two different speakers to merge")
+        meeting = self.server.store.get_meeting(meeting_id)
+        if meeting is None:
+            self._json({"error": "Meeting not found"}, 404)
+            return
+        participants = meeting.get("participants", [])
+        source = next((item for item in participants if item.get("name") == source_name), None)
+        target = next((item for item in participants if item.get("name") == target_name), None)
+        if source is None or target is None:
+            raise ValueError("Speaker not found in this meeting")
+
+        target_id = target.get("id")
+        for turn in meeting.get("transcript", []):
+            if turn.get("speaker") == source_name:
+                turn["speaker"] = target_name
+                if target_id:
+                    turn["participant_key"] = target_id
+                if target.get("known") and target_id:
+                    turn["speaker_id"] = target_id
+                else:
+                    turn.pop("speaker_id", None)
+        for action in meeting.get("actions", []):
+            if action.get("owner") == source_name:
+                action["owner"] = target_name
+        meeting["participants"] = [item for item in participants if item is not source]
         self.server.store.save_meeting(meeting)
         self._json(meeting)
 

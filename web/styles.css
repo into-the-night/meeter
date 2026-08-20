@@ -197,6 +197,14 @@ mark { padding: 0 2px; border-radius: 2px; background: #fff0ac; color: inherit; 
 .rename-button { margin-left: auto; border: 0; background: transparent; color: var(--purple); font-size: 9px; cursor: pointer; }
 .listen-button { margin-left: auto; padding: 6px 10px; border: 1px solid #d8d4f3; border-radius: 8px; background: var(--purple-soft); color: var(--purple); font-size: 9px; font-weight: 700; cursor: pointer; }
 .listen-button + .rename-button { margin-left: 0; }
+.speaker-merge-hint { display: flex; align-items: center; gap: 7px; margin: -5px 0 8px; color: #8c8994; font-size: 9px; }
+.speaker-merge-hint span { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 7px; background: var(--purple-soft); color: var(--purple); font-size: 11px; }
+.participant-manage[draggable="true"] { position: relative; border-radius: 12px; cursor: grab; transition: opacity .16s ease, transform .16s ease, background .16s ease, box-shadow .16s ease; }
+.participant-manage[draggable="true"]:active { cursor: grabbing; }
+.participant-manage.is-dragging { opacity: .35; transform: scale(.98); }
+.merge-active .participant-manage:not(.is-dragging) { padding-left: 9px; padding-right: 9px; background: rgba(238,234,252,.35); }
+.participant-manage.merge-target { background: var(--purple-soft) !important; box-shadow: 0 0 0 2px var(--purple), 0 10px 25px rgba(92,75,216,.14); transform: scale(1.015); }
+.participant-manage.merge-target::after { content: "Combine here"; position: absolute; right: 9px; bottom: -9px; z-index: 2; padding: 3px 7px; border-radius: 99px; background: var(--purple); color: white; font-size: 7.5px; font-weight: 700; letter-spacing: .02em; }
 .listen-button.active { border-color: var(--purple); background: var(--purple); color: white; }
 .empty-state { padding: 28px; text-align: center; color: #8b8c9a; font-size: 11px; }
 

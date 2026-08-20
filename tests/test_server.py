@@ -305,6 +305,44 @@ class ServerTests(unittest.TestCase):
         renamed = next(item for item in updated["participants"] if item["name"] == "Renamed speaker")
         self.assertEqual(renamed["voice_snippet"], {"start_seconds": 2.0, "end_seconds": 6.0})
 
+    def test_speakers_can_be_merged_for_a_meeting(self):
+        meeting = demo_meeting().to_dict()
+        source_name = meeting["participants"][1]["name"]
+        target = meeting["participants"][0]
+        target_name = target["name"]
+        source_turn_count = len([turn for turn in meeting["transcript"] if turn["speaker"] == source_name])
+        meeting["actions"][0]["owner"] = source_name
+        self.server.store.save_meeting(meeting)
+
+        status, updated = self.request_json(
+            f"/api/meetings/{meeting['id']}/merge-speakers",
+            json.dumps({"source_name": source_name, "target_name": target_name}),
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(updated["participants"]), len(meeting["participants"]) - 1)
+        self.assertNotIn(source_name, [item["name"] for item in updated["participants"]])
+        self.assertNotIn(source_name, [turn["speaker"] for turn in updated["transcript"]])
+        self.assertEqual(updated["actions"][0]["owner"], target_name)
+        migrated_turns = [turn for turn in updated["transcript"] if turn.get("participant_key") == target["id"]]
+        self.assertGreaterEqual(len(migrated_turns), source_turn_count)
+
+    def test_speaker_merge_rejects_unknown_or_identical_speakers(self):
+        meeting = demo_meeting().to_dict()
+        self.server.store.save_meeting(meeting)
+        existing = meeting["participants"][0]["name"]
+        for payload in [
+            {"source_name": existing, "target_name": existing},
+            {"source_name": "Missing", "target_name": existing},
+        ]:
+            request = urllib.request.Request(
+                self.base + f"/api/meetings/{meeting['id']}/merge-speakers",
+                data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST",
+            )
+            with self.assertRaises(urllib.error.HTTPError) as raised:
+                urllib.request.urlopen(request, timeout=3)
+            self.assertEqual(raised.exception.code, 400)
+
 
 class JobManagerTests(unittest.TestCase):
     def test_success_publishes_meeting_only_after_audio_metadata(self):

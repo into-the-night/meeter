@@ -476,8 +476,9 @@ function renderDetails() {
     </article>
     <article class="card card-pad">
       <div class="section-head"><h2>Speakers</h2></div>
+      ${(meeting.participants || []).length > 1 ? `<p class="speaker-merge-hint"><span>↔</span> Drag a speaker onto another to combine them</p>` : ""}
       ${(meeting.participants || []).map((person) => `
-        <div class="participant-manage">
+        <div class="participant-manage" draggable="true" data-speaker-name="${escapeHtml(person.name)}" aria-label="${escapeHtml(person.name)}. Drag onto another speaker to combine them.">
           <span class="participant-avatar ${person.known === false ? "unknown" : ""}">${escapeHtml(initials(person.name))}</span>
           <span><strong>${escapeHtml(person.name)}</strong><small>${person.known === false ? "Unknown voice · only in this meeting" : "Recognized local profile"}</small></span>
           ${meeting.audio && person.voice_snippet ? `<button class="listen-button" data-action="play-voice-snippet" data-start="${Number(person.voice_snippet.start_seconds)}" data-end="${Number(person.voice_snippet.end_seconds)}" aria-pressed="false" aria-label="Listen to ${escapeHtml(person.name)} voice snippet">Listen</button>` : ""}
@@ -1303,6 +1304,24 @@ async function renameSpeaker(oldName) {
   } catch (error) { toast(error.message, "error"); }
 }
 
+async function mergeSpeakers(sourceName, targetName) {
+  if (!state.current || !sourceName || !targetName || sourceName === targetName) return;
+  try {
+    state.current = await api(`/api/meetings/${encodeURIComponent(state.current.id)}/merge-speakers`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ source_name: sourceName, target_name: targetName }),
+    });
+    await refreshMeetings();
+    renderMeeting();
+    renderMeetingList();
+    toast(`${sourceName} combined with ${targetName}`);
+  } catch (error) {
+    toast(error.message, "error");
+    renderMeeting();
+  }
+}
+
 document.addEventListener("click", async (event) => {
   const trigger = event.target.closest("[data-action]");
   if (!trigger) return;
@@ -1400,6 +1419,43 @@ document.addEventListener("change", (event) => {
     $("#mic-device-menu").hidden = true;
     $("[data-action='toggle-mic-menu']").setAttribute("aria-expanded", "false");
   }
+});
+
+let draggedSpeaker = "";
+document.addEventListener("dragstart", (event) => {
+  const row = event.target.closest(".participant-manage[data-speaker-name]");
+  if (!row) return;
+  draggedSpeaker = row.dataset.speakerName;
+  row.classList.add("is-dragging");
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", draggedSpeaker);
+  row.closest("article")?.classList.add("merge-active");
+});
+document.addEventListener("dragover", (event) => {
+  const row = event.target.closest(".participant-manage[data-speaker-name]");
+  if (!row || !draggedSpeaker || row.dataset.speakerName === draggedSpeaker) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = "move";
+  $$(".participant-manage.merge-target").forEach((item) => item.classList.remove("merge-target"));
+  row.classList.add("merge-target");
+});
+document.addEventListener("dragleave", (event) => {
+  const row = event.target.closest(".participant-manage.merge-target");
+  if (row && !row.contains(event.relatedTarget)) row.classList.remove("merge-target");
+});
+document.addEventListener("drop", (event) => {
+  const row = event.target.closest(".participant-manage[data-speaker-name]");
+  if (!row || !draggedSpeaker || row.dataset.speakerName === draggedSpeaker) return;
+  event.preventDefault();
+  const sourceName = draggedSpeaker;
+  const targetName = row.dataset.speakerName;
+  draggedSpeaker = "";
+  mergeSpeakers(sourceName, targetName);
+});
+document.addEventListener("dragend", () => {
+  draggedSpeaker = "";
+  $$(".participant-manage").forEach((row) => row.classList.remove("is-dragging", "merge-target"));
+  $$(".merge-active").forEach((card) => card.classList.remove("merge-active"));
 });
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); $("#global-search").focus(); }
