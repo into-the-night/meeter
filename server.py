@@ -6,9 +6,12 @@ import json
 import mimetypes
 import os
 import queue
+import shutil
+import subprocess
 import threading
 import time
 import urllib.parse
+from contextlib import contextmanager
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -54,8 +57,42 @@ class JobManager:
         self._jobs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         self.model_lock = threading.RLock()
+        self._caffeinate_lock = threading.RLock()
+        self._caffeinate_process: subprocess.Popen[bytes] | None = None
+        self._caffeinate_users = 0
         for job in self.pipeline.store.recover_jobs():
             self._jobs[str(job["id"])] = job
+
+    @contextmanager
+    def prevent_system_sleep(self):
+        """Hold a macOS idle-sleep assertion only while local inference is active."""
+        with self._caffeinate_lock:
+            self._caffeinate_users += 1
+            if self._caffeinate_process is None:
+                executable = shutil.which("caffeinate")
+                if executable:
+                    try:
+                        self._caffeinate_process = subprocess.Popen(
+                            [executable, "-i"],
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                    except OSError as exc:
+                        print(f"[power] unable to prevent idle sleep: {exc}")
+        try:
+            yield
+        finally:
+            with self._caffeinate_lock:
+                self._caffeinate_users -= 1
+                if self._caffeinate_users == 0 and self._caffeinate_process is not None:
+                    process, self._caffeinate_process = self._caffeinate_process, None
+                    process.terminate()
+                    try:
+                        process.wait(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=2)
 
     def _update(self, job_id: str, values: dict[str, Any]) -> None:
         with self._lock:
@@ -99,7 +136,7 @@ class JobManager:
             self._update(job_id, {"state": "processing", "step": step, "progress": progress, "updated_at": time.time()})
 
         def build() -> dict[str, Any]:
-            with self.model_lock:
+            with self.prevent_system_sleep(), self.model_lock:
                 return self.pipeline.process(audio_path, source_name, update)
 
         self._publish(job_id, audio_path, source_name, mime_type, retain_audio, build)
@@ -119,7 +156,7 @@ class JobManager:
 
         def build() -> dict[str, Any]:
             chunks = chunk_results()
-            with self.model_lock:
+            with self.prevent_system_sleep(), self.model_lock:
                 if chunks:
                     return self.pipeline.finalize_stream_chunks(chunks, source_name, duration, update)
                 update("A batch failed; safely processing the complete recording", 8)
@@ -272,7 +309,7 @@ class RecordingSessionManager:
                         path.unlink(missing_ok=True)
                         continue
                     session["chunks"][index]["status"] = "processing"
-                with self.jobs.model_lock:
+                with self.jobs.prevent_system_sleep(), self.jobs.model_lock:
                     result = self.pipeline.process_stream_chunk(path, index, start, end)
                 with self._condition:
                     chunk = self._sessions[session_id]["chunks"][index]

@@ -358,6 +358,31 @@ class ServerTests(unittest.TestCase):
 
 
 class JobManagerTests(unittest.TestCase):
+    def test_prevents_idle_sleep_only_while_processing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory))
+            pipeline = type("Pipeline", (), {"store": store})()
+            process = unittest.mock.MagicMock()
+            with patch("server.shutil.which", return_value="/usr/bin/caffeinate"), \
+                    patch("server.subprocess.Popen", return_value=process) as popen:
+                manager = JobManager(pipeline)
+                with manager.prevent_system_sleep():
+                    with manager.prevent_system_sleep():
+                        self.assertEqual(popen.call_count, 1)
+                    process.terminate.assert_not_called()
+                process.terminate.assert_called_once()
+                process.wait.assert_called_once_with(timeout=2)
+
+    def test_processing_continues_when_caffeinate_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LocalStore(Path(directory))
+            pipeline = type("Pipeline", (), {"store": store})()
+            with patch("server.shutil.which", return_value=None), patch("server.subprocess.Popen") as popen:
+                manager = JobManager(pipeline)
+                with manager.prevent_system_sleep():
+                    pass
+                popen.assert_not_called()
+
     def test_success_publishes_meeting_only_after_audio_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             store = LocalStore(Path(directory))

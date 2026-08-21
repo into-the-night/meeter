@@ -25,6 +25,8 @@ On Apple Silicon, Qwen ASR automatically uses PyTorch MPS and the summary model 
 
 To compare MPS batch sizes without changing models or decoding settings, source `local.env` and run `./.venv/bin/python benchmark_asr_batches.py /path/to/representative-audio.webm`. It reports elapsed time, real-time factor, turn count, and word count for sizes 2, 3, and 4.
 
+On macOS, Meeter automatically holds an idle-sleep assertion with `caffeinate` while local model inference is running, then releases it immediately afterward. Closing the lid or explicitly choosing Sleep can still suspend processing.
+
 ## Installed quick start
 
 ```bash
